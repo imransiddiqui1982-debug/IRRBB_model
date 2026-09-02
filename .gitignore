@@ -32,3 +32,6 @@ data/_*.txt
 
 # Large local-only caches (keep live_curve_cache.json for offline demo)
 output/*.png
+
+# Deferred until GitHub token has workflow scope
+.github_pending/
