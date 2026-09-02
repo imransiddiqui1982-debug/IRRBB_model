@@ -1,6 +1,6 @@
 # IRRBB Production Engine (BCBS 368)
 
-[![CI](https://github.com/marieltv/IRRBB_model/actions/workflows/ci.yaml/badge.svg)](https://github.com/marieltv/IRRBB_model/actions)
+[![CI](https://github.com/imransiddiqui1982-debug/IRRBB_model/actions/workflows/ci.yaml/badge.svg)](https://github.com/imransiddiqui1982-debug/IRRBB_model/actions)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -18,7 +18,7 @@ End-to-end **Interest Rate Risk in the Banking Book (IRRBB)** engine with:
 ## Quick start
 
 ```bash
-git clone https://github.com/marieltv/IRRBB_model.git
+git clone https://github.com/imransiddiqui1982-debug/IRRBB_model.git
 cd IRRBB_model
 python -m pip install -r requirements.txt
 
