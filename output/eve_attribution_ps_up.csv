@@ -1,0 +1,21 @@
+side,instrument,notional,type,eff_duration,pv_base,pv_shocked,delta_eve
+ASSET,Cash & Central Bank Reserves,150,bullet_floating,0.17,148.71,148.25,-0.47
+ASSET,T-Bills (3M),100,bullet_fixed,0.0,0.0,0.0,0.0
+ASSET,Floating Rate Notes (6M reset),200,bullet_floating,0.62,193.82,191.55,-2.27
+ASSET,Fixed Gov Bonds (2Y),200,bullet_fixed,2.43,193.79,185.11,-8.68
+ASSET,"Floating Corp Loans (3Y, qtrly reset)",600,bullet_floating,0.38,588.6,584.46,-4.14
+ASSET,"Fixed Retail Loans (4Y, amortising)",250,amortising,2.03,255.18,245.91,-9.27
+ASSET,Fixed Gov Bonds (5Y),300,bullet_fixed,5.09,287.35,261.26,-26.09
+ASSET,"Fixed-Rate Mortgages (10Y, amortising)",800,amortising,4.76,824.72,759.76,-64.97
+ASSET,Fixed Gov Bonds (15Y),200,bullet_fixed,14.25,169.37,133.32,-36.05
+ASSET,Fixed Infrastructure Bonds (20Y),100,bullet_fixed,18.43,89.25,67.76,-21.49
+LIABILITY,Demand Deposits (Core NMD),700,demand_deposit,0.17,-694.0,-691.83,2.17
+LIABILITY,Retail Savings (Sticky NMD),250,demand_deposit,0.38,-245.25,-243.52,1.73
+LIABILITY,Overnight Repo,100,bullet_floating,0.04,-99.79,-99.71,0.08
+LIABILITY,Term Deposits (6M),200,bullet_fixed,0.62,-196.73,-194.42,2.3
+LIABILITY,Term Deposits (1Y),350,bullet_fixed,1.24,-340.29,-332.41,7.87
+LIABILITY,"Floating Senior Debt (3Y, semi reset)",300,bullet_floating,0.62,-290.73,-287.33,3.4
+LIABILITY,Fixed-Rate Covered Bonds (5Y),300,bullet_fixed,5.06,-291.94,-265.61,26.33
+LIABILITY,Fixed-Rate Borrowings (7Y),200,bullet_fixed,6.66,-196.85,-174.11,22.75
+LIABILITY,Subordinated Debt (10Y),200,bullet_fixed,10.2,-195.6,-163.66,31.94
+LIABILITY,Tier 2 Capital Notes (15Y),100,bullet_fixed,13.24,-106.18,-85.45,20.73

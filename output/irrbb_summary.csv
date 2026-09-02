@@ -1,0 +1,7 @@
+Scenario,Description,ΔNII ($M),ΔEVE ($M),|ΔEVE|/T1 (%),Status
+Parallel Shift Up,Uniform +200bp across all tenors,-8.0,-54.12,10.8,WATCH
+Parallel Shift Down,Uniform -200bp across all tenors,8.0,69.42,13.9,WATCH
+Steepener,Short rates down / long rates up,3.93,-12.65,2.5,PASS
+Flattener,Short rates up / long rates down,-3.93,19.26,3.9,PASS
+Short Rates Up,"Short-end shock up, long end unchanged",-9.86,-17.28,3.5,PASS
+Short Rates Down,"Short-end shock down, long end unchanged",9.86,18.12,3.6,PASS

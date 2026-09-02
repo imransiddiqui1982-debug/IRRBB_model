@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+.env.*
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local scratch / PDF extracts
+data/_lcr_extract.txt
+data/_nsfr_extract.txt
+data/_*.txt
+*.pdf
+
+# Large local-only caches (keep live_curve_cache.json for offline demo)
+output/*.png
