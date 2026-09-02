@@ -256,10 +256,10 @@ with st.sidebar:
 
     st.markdown("<p class='section-label'>Balance Sheet</p>",
                 unsafe_allow_html=True)
-    template_path = os.path.join(os.path.dirname(__file__), "data", "balance_sheet_template.csv")
-    if not os.path.exists(template_path):
-        template_path = os.path.join(os.path.dirname(__file__), "data", "sample_balance_sheet.csv")
-    with open(template_path, "rb") as f:
+    bs_template_path = os.path.join(os.path.dirname(__file__), "data", "balance_sheet_template.csv")
+    if not os.path.exists(bs_template_path):
+        bs_template_path = os.path.join(os.path.dirname(__file__), "data", "sample_balance_sheet.csv")
+    with open(bs_template_path, "rb") as f:
         template_bytes = f.read()
     st.download_button(
         "Download CSV template",
@@ -270,7 +270,7 @@ with st.sidebar:
     )
     use_calibrated_bs = st.checkbox(
         "Load calibrated balance sheet sample",
-        value=os.path.exists(template_path),
+        value=os.path.exists(bs_template_path),
         help="Uses balance_sheet_template.csv ($2.9B assets, aligned with deposit model).",
     )
     uploaded_csv = st.file_uploader(
@@ -286,9 +286,9 @@ with st.sidebar:
                 unsafe_allow_html=True)
     nmd_template_path = os.path.join(os.path.dirname(__file__), "data", "comprehensive_deposit_template.xlsx")
     legacy_template = os.path.join(os.path.dirname(__file__), "data", "nmd_deposit_template.xlsx")
-    template_path = nmd_template_path if os.path.exists(nmd_template_path) else legacy_template
-    if os.path.exists(template_path):
-        with open(template_path, "rb") as f:
+    deposit_template_path = nmd_template_path if os.path.exists(nmd_template_path) else legacy_template
+    if os.path.exists(deposit_template_path):
+        with open(deposit_template_path, "rb") as f:
             nmd_template_bytes = f.read()
         st.download_button(
             "Download comprehensive deposit template",
@@ -441,8 +441,8 @@ if use_live_curve:
         use_live_curve = False
 
 csv_payload = None
-if use_calibrated_bs and os.path.exists(template_path):
-    with open(template_path, "rb") as f:
+if use_calibrated_bs and os.path.exists(bs_template_path):
+    with open(bs_template_path, "rb") as f:
         csv_payload = f.read()
 elif uploaded_csv is not None:
     csv_payload = uploaded_csv.getvalue()
