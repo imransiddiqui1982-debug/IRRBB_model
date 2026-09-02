@@ -456,7 +456,7 @@ if use_nmd:
 if use_nmd and not nmd_payload:
     st.error(
         "NMD refinement is enabled. Upload a deposit file or enable "
-        "'Load v2 sample (Desktop copy in data/)'."
+        "'Load calibrated deposit model sample' in the sidebar."
     )
     st.stop()
 try:

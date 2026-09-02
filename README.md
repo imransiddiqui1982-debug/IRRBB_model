@@ -41,6 +41,24 @@ Open the Streamlit URL (default `http://localhost:8501`). In the sidebar:
 
 ---
 
+## Run on Streamlit Community Cloud (from GitHub)
+
+GitHub stores the code; **Streamlit Community Cloud** runs the dashboard and gives you a public URL (e.g. `https://irrbb-model.streamlit.app`).
+
+1. Sign in at **[share.streamlit.io](https://share.streamlit.io)** with your **GitHub** account (`imransiddiqui1982-debug`).
+2. Click **Create app** → **From existing repo**.
+3. Select repository **`imransiddiqui1982-debug/IRRBB_model`**, branch **`main`**, main file path **`app.py`**.
+4. Click **Deploy**. Streamlit installs `requirements.txt` and starts the app (first build may take 2–5 minutes).
+5. After deploy, open the app URL. The sidebar defaults load the calibrated balance sheet and deposit workbook from the `data/` folder in the repo.
+
+**Notes**
+
+- No API keys are required. The live yield curve uses public NY Fed / BlueGamma endpoints; if they fail, the app falls back to the bundled `data/live_curve_cache.json`.
+- To redeploy after a `git push`, Streamlit Cloud rebuilds automatically (or use **Reboot app** in the app settings).
+- Optional: under **Advanced settings**, set Python **3.11** if you want to pin the runtime.
+
+---
+
 ## What this engine calculates
 
 | Module | Output | Standard |
