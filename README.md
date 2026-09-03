@@ -91,6 +91,12 @@ One row per instrument:
 | `maturity_years` | Yes | Contractual maturity (years) |
 | `payment_freq` | No | Payments per year (default 2) |
 | `repricing_years` | No | Next reset for floaters |
+| `prepay_enabled` | No | `1`/`Y` enables CPR on amortising loans (auto-on if name contains "mortgage") |
+| `base_cpr` | No | Fixed annual CPR override (fraction or %); blank → S-curve from rate incentive |
+| `age_months` | No | Loan age for PSA seasoning (default 0) |
+| `market_mortgage_rate` | No | Primary mortgage rate (decimal or %); blank → curve + 150bp spread |
+
+**Mortgage CPR:** Amortising mortgages apply PSA seasoning × refinance S-curve. Under each BCBS shock the primary rate moves with the curve, so CPR rises when rates fall (negative convexity) and falls when rates rise (extension risk). That schedule feeds **EVE**, **NII** (1Y prepaid reinvestment), **LCR** (30-day principal inflows), and **NSFR** (WAL-based residual maturity / RSF). Optional Hugging Face Chronos blend: `pip install -r requirements-hf.txt` then set `use_hf_chronos=True` with `historical_cpr`.
 
 **Tip:** When NMD is enabled, leave demand deposits out of the CSV (or they are replaced). Use the CSV for assets + wholesale funding only.
 
@@ -136,8 +142,11 @@ python scripts/create_deposit_data_template.py
 **EVE method:** schedule CFs → slot into 19 BCBS buckets → discount on base curve and shocked curve →  
 `ΔEVE = ΔPV(assets) − ΔPV(liabilities)`.
 
-**NII method:** floating / demand instruments only:  
-`ΔNII = ± notional × shock_bp(bucket) / 10,000`.
+**NII method:** floating / demand instruments:  
+`ΔNII = ± notional × shock_bp(bucket) / 10,000`.  
+CPR mortgages: extra 1Y prepayments under the shock reinvest at the shocked short rate vs lost contractual coupon.
+
+**Mortgage prepayment:** see `src/prepayment.py` (S-curve + PSA). Optional HF Chronos refinement via `requirements-hf.txt`.
 
 **Curves:** with live curve on: **0–12M SOFR**, **1Y–10Y USD SOFR IRS mid**; then BCBS shocks are added.
 
@@ -208,7 +217,8 @@ IRRBB_model/
 │   ├── us_lcr_nsfr_deposit_model.xlsx   # NMD + LCR/NSFR workbook
 │   └── live_curve_cache.json
 ├── src/
-│   ├── cashflows.py       # Instrument CF schedules
+│   ├── cashflows.py       # Instrument CF schedules (+ CPR amortisation)
+│   ├── prepayment.py      # PSA / S-curve CPR (+ optional HF Chronos)
 │   ├── time_buckets.py    # 19 BCBS buckets
 │   ├── scenarios.py       # Six prescribed shocks
 │   ├── yield_curve.py     # Discounting

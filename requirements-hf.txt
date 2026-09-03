@@ -1,0 +1,9 @@
+# Optional Hugging Face stack for CPR time-series refinement.
+# Core engine runs without these packages (S-curve / PSA only).
+#
+#   pip install -r requirements-hf.txt
+#
+# Then construct Instrument(..., use_hf_chronos=True, historical_cpr=(...)).
+torch>=2.1
+chronos-forecasting>=1.4
+huggingface_hub>=0.23

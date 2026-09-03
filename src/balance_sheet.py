@@ -82,6 +82,8 @@ def get_instruments() -> tuple[list[Instrument], list[Instrument]]:
             instrument_type="amortising",
             maturity_years=10.0,
             payment_freq=12, side="asset",
+            prepay_enabled=True,
+            age_months=24,
         ),
         Instrument(
             name="Fixed Gov Bonds (15Y)",

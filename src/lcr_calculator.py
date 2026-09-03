@@ -237,15 +237,42 @@ def compute_cash_outflows(
 
 
 def compute_cash_inflows(assets: list[Instrument]) -> tuple[float, pd.DataFrame]:
-    """Compute 30-day cash inflows from maturing / repricing assets."""
+    """
+    Compute 30-day cash inflows from maturing / repricing assets.
+
+    Prepayable amortising loans contribute scheduled + prepaid principal
+    returned within 30 days (CPR-aware), not the full face amount.
+    """
     rows = []
     total = 0.0
 
     for inst in assets:
+        hqla = _classify_hqla(inst)
+
+        if inst.instrument_type == "amortising" and getattr(inst, "prepay_enabled", False):
+            # Monthly mortgages pay at 1/12Y; LCR window is 30/365 ≈ 0.082Y.
+            # Prorate the first payment period into the 30-day stress window.
+            period = 1.0 / max(int(inst.payment_freq), 1)
+            first_period_prin = inst.principal_within_years(period)
+            returned = first_period_prin * min(1.0, THIRTY_DAYS / period)
+            if returned <= 1e-12:
+                continue
+            rate = INFLOW_PERF_LOAN
+            inflow = returned * rate
+            cat = "Mortgage / amortising (CPR 30d principal)"
+            total += inflow
+            rows.append({
+                "Instrument": inst.name,
+                "Category": cat,
+                "Notional ($M)": round(returned, 2),
+                "30d Inflow ($M)": round(inflow, 2),
+                "Inflow Rate (%)": rate * 100,
+            })
+            continue
+
         if inst.maturity_years > THIRTY_DAYS and inst.repricing_years > THIRTY_DAYS:
             continue
 
-        hqla = _classify_hqla(inst)
         if hqla:
             rate = INFLOW_SECURITIES
             cat = "HQLA maturing"

@@ -1,5 +1,12 @@
 from .time_buckets import BCBS_BUCKETS, BUCKET_LABELS, N_BUCKETS, years_to_bucket
 from .cashflows import Instrument, CashFlow
+from .prepayment import (
+    PrepaymentParams,
+    cpr_to_smm,
+    effective_cpr,
+    incentive_cpr,
+    s_curve_cpr,
+)
 from .yield_curve import YieldCurve, BASE_CURVE
 from .balance_sheet import get_instruments
 from .load_balance_sheet import load_instruments_from_csv, instruments_to_dataframe
@@ -9,16 +16,23 @@ from .calculator import IRRBBCalculator, ScenarioResult
 from .lcr_calculator import compute_lcr, compute_lcr_from_nmd_allocation, LcrResult
 from .nsfr_calculator import compute_nsfr, compute_nsfr_from_nmd_allocation, NsfrResult
 from .liquidity_ratios import compute_liquidity_ratios, LiquidityRatiosResult
-from .plots import (
-    plot_nii, plot_eve, plot_repricing_gap,
-    plot_shock_curves, plot_nii_decomposition,
-    plot_instrument_eve_waterfall,
-    plot_yield_curve,
-)
+
+try:
+    from .plots import (
+        plot_nii, plot_eve, plot_repricing_gap,
+        plot_shock_curves, plot_nii_decomposition,
+        plot_instrument_eve_waterfall,
+        plot_yield_curve,
+    )
+except ImportError:  # pragma: no cover — optional viz deps (matplotlib)
+    plot_nii = plot_eve = plot_repricing_gap = None
+    plot_shock_curves = plot_nii_decomposition = None
+    plot_instrument_eve_waterfall = plot_yield_curve = None
 
 __all__ = [
     'BCBS_BUCKETS', 'BUCKET_LABELS', 'N_BUCKETS', 'years_to_bucket',
     'Instrument', 'CashFlow',
+    'PrepaymentParams', 'cpr_to_smm', 'effective_cpr', 'incentive_cpr', 's_curve_cpr',
     'YieldCurve', 'BASE_CURVE',
     'get_instruments',
     'load_instruments_from_csv', 'instruments_to_dataframe',

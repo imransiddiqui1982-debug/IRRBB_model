@@ -28,7 +28,8 @@ Instrument types supported
     bullet_floating : floating-rate bullet loan
                       single repricing cash flow at next reset date
     amortising      : fixed-rate amortising loan (equal principal)
-                      principal paid evenly each period + declining coupons
+                      principal paid evenly each period + declining coupons;
+                      optional CPR prepayment accelerates principal
     demand_deposit  : non-maturity deposit (NMD) — modelled as single
                       cash flow at behavioural repricing tenor
 """
@@ -39,6 +40,11 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 from .time_buckets import years_to_bucket, N_BUCKETS, BUCKET_MIDPOINTS
+from .prepayment import (
+    PrepaymentParams,
+    cpr_to_smm,
+    effective_cpr,
+)
 
 
 InstrumentType = Literal[
@@ -54,7 +60,7 @@ class CashFlow:
     """A single scheduled cash flow."""
     time_years: float      # when it occurs (from today)
     amount:     float      # USD millions (positive = inflow for assets)
-    cf_type:    str        # 'coupon' | 'principal' | 'repricing'
+    cf_type:    str        # 'coupon' | 'principal' | 'prepayment' | 'repricing'
     bucket:     int        # BCBS 368 bucket index (derived)
 
     def __post_init__(self):
@@ -77,6 +83,13 @@ class Instrument:
                       (1=annual, 2=semi, 4=quarterly, 12=monthly)
     repricing_years : for floating instruments — years to next rate reset
     side            : 'asset' or 'liability'
+    prepay_enabled  : if True (amortising), apply CPR / SMM schedule
+    base_cpr        : optional fixed annual CPR override (fraction); if None,
+                      CPR is derived from refinance incentive vs market rate
+    market_mortgage_rate : primary mortgage rate (decimal) for incentive CPR
+    age_months      : loan age at t=0 for PSA seasoning
+    use_hf_chronos  : optional Chronos blend when historical_cpr provided
+    historical_cpr  : optional recent monthly CPR series for HF refinement
     cashflows       : populated by generate_cashflows()
     """
     name:             str
@@ -87,11 +100,35 @@ class Instrument:
     payment_freq:     int = 2          # semi-annual default
     repricing_years:  float = None       # floating instruments only
     side:             str = "asset"
+    prepay_enabled:   bool = False
+    base_cpr:         float | None = None
+    market_mortgage_rate: float | None = None
+    age_months:       int = 0
+    use_hf_chronos:   bool = False
+    historical_cpr:   tuple[float, ...] | None = None
+    prepay_params:    PrepaymentParams | None = field(default=None, repr=False)
     cashflows:        list[CashFlow] = field(default_factory=list, repr=False)
 
     def __post_init__(self):
         if self.repricing_years is None:
             self.repricing_years = self.maturity_years
+        # Auto-enable CPR for mortgage-named amortising assets when not set
+        if (
+            self.instrument_type == "amortising"
+            and not self.prepay_enabled
+            and "mortgage" in self.name.lower()
+        ):
+            self.prepay_enabled = True
+        if (
+            self.prepay_enabled
+            and self.instrument_type == "amortising"
+            and self.market_mortgage_rate is None
+        ):
+            from .prepayment import scenario_market_mortgage_rate
+            from .yield_curve import BASE_CURVE
+            self.market_mortgage_rate = scenario_market_mortgage_rate(
+                BASE_CURVE.base_rates, None, self.maturity_years,
+            )
         self.cashflows = self.generate_cashflows()
 
     # ── Cash flow generators ──────────────────────────────────────────────────
@@ -143,14 +180,48 @@ class Instrument:
             )
         ]
 
+    def resolve_cpr(
+        self,
+        market_mortgage_rate: float | None = None,
+        age_months: int | None = None,
+    ) -> float:
+        """Annual CPR for this instrument under a given market mortgage rate."""
+        if self.base_cpr is not None:
+            return float(np.clip(self.base_cpr, 0.0, 0.999))
+        mkt = (
+            market_mortgage_rate
+            if market_mortgage_rate is not None
+            else self.market_mortgage_rate
+        )
+        if mkt is None:
+            # Neutral incentive fallback (~PSA 100% terminal)
+            mkt = self.coupon_pct / 100.0
+        age = self.age_months if age_months is None else age_months
+        return effective_cpr(
+            self.coupon_pct,
+            mkt,
+            age_months=age,
+            params=self.prepay_params,
+            historical_cpr=self.historical_cpr,
+            use_hf_chronos=self.use_hf_chronos,
+        )
+
     def _amortising(self) -> list[CashFlow]:
         """
-        Fixed-rate amortising loan: equal principal repaid each period.
-        Outstanding balance declines linearly → declining coupon payments.
+        Fixed-rate amortising loan: equal scheduled principal each period.
+
+        When ``prepay_enabled``, each period also applies SMM prepayment on the
+        remaining balance after the scheduled principal payment (standard CPR
+        convention for ALM cash-flow engines).
         """
+        if self.prepay_enabled:
+            return self._amortising_with_cpr()
+        return self._amortising_static()
+
+    def _amortising_static(self) -> list[CashFlow]:
         cfs = []
         period = 1.0 / self.payment_freq
-        n_periods = round(self.maturity_years * self.payment_freq)
+        n_periods = max(round(self.maturity_years * self.payment_freq), 1)
         principal_per_period = self.notional / n_periods
 
         outstanding = self.notional
@@ -162,6 +233,108 @@ class Instrument:
             outstanding -= principal_per_period
 
         return cfs
+
+    def _amortising_with_cpr(
+        self,
+        market_mortgage_rate: float | None = None,
+        cpr_override: float | None = None,
+    ) -> list[CashFlow]:
+        """
+        Scheduled amortisation + CPR prepayments.
+
+        Period i:
+          coupon on opening balance
+          scheduled principal = original_notional / n_periods (capped at balance)
+          prepayment = SMM × (balance − scheduled)
+          closing balance = balance − scheduled − prepayment
+        """
+        cfs: list[CashFlow] = []
+        period = 1.0 / self.payment_freq
+        n_periods = max(round(self.maturity_years * self.payment_freq), 1)
+        scheduled = self.notional / n_periods
+        outstanding = float(self.notional)
+
+        for i in range(1, n_periods + 1):
+            if outstanding <= 1e-12:
+                break
+            t = i * period
+            age = self.age_months + i - 1
+            if cpr_override is not None:
+                cpr = float(np.clip(cpr_override, 0.0, 0.999))
+            else:
+                cpr = self.resolve_cpr(market_mortgage_rate, age_months=age)
+            smm = cpr_to_smm(cpr, self.payment_freq)
+
+            coupon = outstanding * (self.coupon_pct / 100) / self.payment_freq
+            cfs.append(CashFlow(t, coupon, "coupon", years_to_bucket(t)))
+
+            sched_prin = min(scheduled, outstanding)
+            remaining_after_sched = outstanding - sched_prin
+            prep = remaining_after_sched * smm if i < n_periods else remaining_after_sched
+            # Final period: clear residual (balloon of unscheduled remainder)
+            if i == n_periods:
+                prep = remaining_after_sched
+                remaining_after_sched = 0.0
+
+            if sched_prin > 1e-12:
+                cfs.append(CashFlow(t, sched_prin, "principal", years_to_bucket(t)))
+            if prep > 1e-12:
+                cfs.append(CashFlow(t, prep, "prepayment", years_to_bucket(t)))
+
+            outstanding = max(remaining_after_sched - prep, 0.0)
+
+        return cfs
+
+    def cashflows_under_market_rate(
+        self,
+        market_mortgage_rate: float,
+        cpr_override: float | None = None,
+    ) -> list[CashFlow]:
+        """Regenerate cash flows under a shocked primary mortgage rate (EVE)."""
+        if self.instrument_type != "amortising" or not self.prepay_enabled:
+            return list(self.cashflows)
+        return self._amortising_with_cpr(
+            market_mortgage_rate=market_mortgage_rate,
+            cpr_override=cpr_override,
+        )
+
+    def bucket_cashflows_under_market_rate(
+        self,
+        market_mortgage_rate: float,
+        cpr_override: float | None = None,
+    ) -> np.ndarray:
+        result = np.zeros(N_BUCKETS)
+        for cf in self.cashflows_under_market_rate(market_mortgage_rate, cpr_override):
+            result[cf.bucket] += cf.amount
+        return result
+
+    def principal_within_years(self, horizon_years: float) -> float:
+        """
+        Scheduled + prepaid principal returned within ``horizon_years``.
+        Used for LCR 30-day inflows and NSFR residual maturity proxies.
+        """
+        total = 0.0
+        for cf in self.cashflows:
+            if cf.cf_type in ("principal", "prepayment") and cf.time_years <= horizon_years + 1e-9:
+                total += cf.amount
+        return total
+
+    def residual_balance_after_years(self, horizon_years: float) -> float:
+        """Outstanding principal after cash flows up to ``horizon_years``."""
+        returned = self.principal_within_years(horizon_years)
+        return max(self.notional - returned, 0.0)
+
+    def wal_years(self) -> float:
+        """Principal-weighted average life (years) including prepayments."""
+        prin = [
+            (cf.time_years, cf.amount)
+            for cf in self.cashflows
+            if cf.cf_type in ("principal", "prepayment") and cf.amount > 0
+        ]
+        total = sum(a for _, a in prin)
+        if total <= 0:
+            return float(self.maturity_years)
+        return sum(t * a for t, a in prin) / total
 
     def _demand_deposit(self) -> list[CashFlow]:
         """

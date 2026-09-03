@@ -22,12 +22,20 @@ This correctly accounts for:
 
 NII methodology (BCBS 368 §109–112)
 --------------------------------------
-NII is computed over a 1-year horizon. Only cash flows that reprice within
-the horizon (floating-rate instruments) affect NII:
+NII is computed over a 1-year horizon. Floating-rate / NMD notionals that
+reprice within the horizon contribute:
 
     ΔNII(i) = repricing_notional(i) × shock(bucket_i) / 10_000
 
-    sign: +1 for assets, -1 for liabilities
+Mortgage CPR: prepaid principal returned within 1Y is assumed to reinvest
+at the shocked short rate (O/N bucket), so higher CPR under rate-down
+scenarios reduces asset NII (lost coupon on prepaid balances).
+
+Mortgage prepayment (CPR)
+-------------------------
+For amortising instruments with ``prepay_enabled``, cash-flow schedules are
+regenerated under each scenario's implied primary mortgage rate so EVE
+captures negative convexity (duration shortens when rates fall).
 """
 
 from __future__ import annotations
@@ -35,6 +43,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from .cashflows import Instrument
+from .prepayment import scenario_market_mortgage_rate
 from .scenarios import Scenario
 from .yield_curve import YieldCurve, BASE_CURVE
 from .time_buckets import BCBS_BUCKETS, BUCKET_MIDPOINTS, N_BUCKETS
@@ -93,9 +102,37 @@ class IRRBBCalculator:
         self.outlier_thr = outlier_threshold
         self.watch_thr = watch_threshold
 
-        # Pre-compute bucketed cash flows for each instrument (expensive, do once)
-        self._asset_cfs = np.array([i.bucket_cashflows() for i in assets])      # (n_assets, 19)
-        self._liab_cfs = np.array([i.bucket_cashflows() for i in liabilities])  # (n_liabs,  19)
+        # Base (no-shock) bucketed CFs — mortgages use base-curve CPR
+        self._asset_cfs = np.array([
+            self._instrument_base_cfs(i) for i in assets
+        ])
+        self._liab_cfs = np.array([
+            self._instrument_base_cfs(i) for i in liabilities
+        ])
+
+    def _instrument_base_cfs(self, inst: Instrument) -> np.ndarray:
+        """Bucket CFs under the base yield curve (incentive CPR for mortgages)."""
+        if inst.instrument_type == "amortising" and inst.prepay_enabled:
+            mkt = scenario_market_mortgage_rate(
+                self.curve.base_rates, None, inst.maturity_years,
+            )
+            return inst.bucket_cashflows_under_market_rate(mkt)
+        return inst.bucket_cashflows()
+
+    def _instrument_shocked_cfs(
+        self,
+        inst: Instrument,
+        scenario: Scenario,
+    ) -> np.ndarray:
+        """Bucket CFs under scenario discount + CPR (negative convexity)."""
+        if inst.instrument_type == "amortising" and inst.prepay_enabled:
+            mkt = scenario_market_mortgage_rate(
+                self.curve.base_rates,
+                scenario.shocks_bp,
+                inst.maturity_years,
+            )
+            return inst.bucket_cashflows_under_market_rate(mkt)
+        return inst.bucket_cashflows()
 
     # ── EVE ───────────────────────────────────────────────────────────────────
 
@@ -118,11 +155,21 @@ class IRRBBCalculator:
         Returns (delta_eve, asset_contribution, liability_contribution).
         ΔEVE = [PV_shocked(assets) - PV_base(assets)]
                - [PV_shocked(liabs) - PV_base(liabs)]
+
+        Prepayable mortgages regenerate CF schedules under the shocked
+        primary mortgage rate before discounting (behavioural optionality).
         """
+        asset_shocked = np.array([
+            self._instrument_shocked_cfs(i, scenario) for i in self.assets
+        ])
+        liab_shocked = np.array([
+            self._instrument_shocked_cfs(i, scenario) for i in self.liabilities
+        ])
+
         pv_base_a = self._pv_matrix(self._asset_cfs, None)
-        pv_shocked_a = self._pv_matrix(self._asset_cfs, scenario.shocks_bp)
-        pv_base_l = self._pv_matrix(self._liab_cfs,  None)
-        pv_shocked_l = self._pv_matrix(self._liab_cfs,  scenario.shocks_bp)
+        pv_shocked_a = self._pv_matrix(asset_shocked, scenario.shocks_bp)
+        pv_base_l = self._pv_matrix(self._liab_cfs, None)
+        pv_shocked_l = self._pv_matrix(liab_shocked, scenario.shocks_bp)
 
         eve_asset = float(np.sum(pv_shocked_a - pv_base_a))
         eve_liab = float(np.sum(pv_shocked_l - pv_base_l))
@@ -137,11 +184,43 @@ class IRRBBCalculator:
         sign:        int,
     ) -> float:
         total = 0.0
+        short_shock = scenario.shock_at_bucket(0) / 10_000
         for inst in instruments:
             if inst.instrument_type in ("bullet_floating", "demand_deposit"):
                 bucket = inst.cashflows[0].bucket   # single repricing CF
                 shock_dec = scenario.shock_at_bucket(bucket) / 10_000
                 total += sign * inst.notional * shock_dec
+            elif (
+                inst.instrument_type == "amortising"
+                and inst.prepay_enabled
+                and inst.side == "asset"
+            ):
+                # Lost coupon on balances prepaid within 1Y under the shock,
+                # partially offset by reinvestment at the shocked short rate.
+                mkt_base = scenario_market_mortgage_rate(
+                    self.curve.base_rates, None, inst.maturity_years,
+                )
+                mkt_shock = scenario_market_mortgage_rate(
+                    self.curve.base_rates, scenario.shocks_bp, inst.maturity_years,
+                )
+                base_cfs = inst.cashflows_under_market_rate(mkt_base)
+                shock_cfs = inst.cashflows_under_market_rate(mkt_shock)
+
+                def _prep_1y(cfs):
+                    return sum(
+                        cf.amount for cf in cfs
+                        if cf.cf_type == "prepayment" and cf.time_years <= 1.0 + 1e-9
+                    )
+
+                prep_base = _prep_1y(base_cfs)
+                prep_shock = _prep_1y(shock_cfs)
+                # Extra prepayment under the shock loses contractual coupon vs
+                # earning the shocked short rate for the remainder of the year
+                # (simplified half-year convention).
+                extra_prep = prep_shock - prep_base
+                coupon_dec = inst.coupon_pct / 100.0
+                reinvest = float(self.curve.base_rates[0]) + short_shock
+                total += sign * extra_prep * (reinvest - coupon_dec) * 0.5
         return total
 
     def calc_nii(self, scenario: Scenario) -> tuple[float, float, float]:
@@ -176,7 +255,7 @@ class IRRBBCalculator:
 
     # ── Repricing gap ─────────────────────────────────────────────────────────
 
-    _MATURING_CF_TYPES = frozenset({"principal", "repricing"})
+    _MATURING_CF_TYPES = frozenset({"principal", "prepayment", "repricing"})
 
     def _cf_dv01(self, amount: float, bucket_idx: int) -> float:
         """DV01 ($M per +1bp) for a maturing / repricing cash flow in one bucket."""
@@ -276,15 +355,23 @@ class IRRBBCalculator:
     def instrument_eve_detail(self, scenario: Scenario) -> pd.DataFrame:
         """Per-instrument ΔEVE breakdown — useful for attribution."""
         rows = []
-        sides = [
+        for sign, instruments, base_matrix in (
             (+1, self.assets, self._asset_cfs),
             (-1, self.liabilities, self._liab_cfs),
-        ]
-        for sign, instruments, cf_matrix in sides:
-            pv_base = self._pv_matrix(cf_matrix, None)
-            pv_shocked = self._pv_matrix(cf_matrix, scenario.shocks_bp)
+        ):
+            shocked_matrix = np.array([
+                self._instrument_shocked_cfs(i, scenario) for i in instruments
+            ])
+            pv_base = self._pv_matrix(base_matrix, None)
+            pv_shocked = self._pv_matrix(shocked_matrix, scenario.shocks_bp)
             for inst, pv_b, pv_s in zip(instruments, pv_base, pv_shocked):
                 delta_pv = sign * (pv_s - pv_b)
+                cpr_note = ""
+                if inst.instrument_type == "amortising" and inst.prepay_enabled:
+                    mkt = scenario_market_mortgage_rate(
+                        self.curve.base_rates, scenario.shocks_bp, inst.maturity_years,
+                    )
+                    cpr_note = f"{inst.resolve_cpr(mkt) * 100:.1f}%"
                 rows.append({
                     "side":          inst.side.upper(),
                     "instrument":    inst.name,
@@ -294,6 +381,7 @@ class IRRBBCalculator:
                     "pv_base":       round(sign * pv_b, 2),
                     "pv_shocked":    round(sign * pv_s, 2),
                     "delta_eve":     round(delta_pv, 2),
+                    "cpr_shocked":   cpr_note,
                 })
         return pd.DataFrame(rows)
 

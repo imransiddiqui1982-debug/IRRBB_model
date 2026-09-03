@@ -392,7 +392,7 @@ def run_model(
     use_nmd: bool,
     curve_tenors: tuple[float, ...] | None,
     curve_rates: tuple[float, ...] | None,
-    _model_version: int = 4,
+    _model_version: int = 5,
 ):
     if csv_bytes:
         assets, liabilities = load_instruments_from_csv(io.BytesIO(csv_bytes))
@@ -511,7 +511,8 @@ st.markdown(
     f"Interest Rate Risk in the Banking Book</h2>"
     f"<p style='color:{DIM};font-size:11px;margin-top:0'>"
     f"BCBS 368 (April 2016) · 19 Repricing Buckets · "
-    f"Full Cash Flow Discounting · 6 Prescribed Scenarios</p>",
+    f"Full Cash Flow Discounting · 6 Prescribed Scenarios · "
+    f"Mortgage CPR (S-curve / PSA)</p>",
     unsafe_allow_html=True,
 )
 st.divider()

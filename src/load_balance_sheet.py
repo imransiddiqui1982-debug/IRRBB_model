@@ -27,7 +27,14 @@ REQUIRED_COLUMNS = [
     "instrument_type",
     "maturity_years",
 ]
-OPTIONAL_COLUMNS = ["payment_freq", "repricing_years"]
+OPTIONAL_COLUMNS = [
+    "payment_freq",
+    "repricing_years",
+    "prepay_enabled",
+    "base_cpr",
+    "age_months",
+    "market_mortgage_rate",
+]
 VALID_TYPES = {"bullet_fixed", "bullet_floating", "amortising", "demand_deposit"}
 VALID_SIDES = {"asset", "liability"}
 
@@ -81,6 +88,27 @@ def _row_to_instrument(row: pd.Series) -> Instrument:
     if "repricing_years" in row.index and pd.notna(row["repricing_years"]):
         repricing_years = float(row["repricing_years"])
 
+    prepay_enabled = False
+    if "prepay_enabled" in row.index and pd.notna(row["prepay_enabled"]):
+        val = str(row["prepay_enabled"]).strip().lower()
+        prepay_enabled = val in ("1", "true", "yes", "y", "t")
+
+    base_cpr = None
+    if "base_cpr" in row.index and pd.notna(row["base_cpr"]):
+        base_cpr = float(row["base_cpr"])
+        if base_cpr > 1.0:
+            base_cpr = base_cpr / 100.0  # allow percent input
+
+    age_months = 0
+    if "age_months" in row.index and pd.notna(row["age_months"]):
+        age_months = int(row["age_months"])
+
+    market_mortgage_rate = None
+    if "market_mortgage_rate" in row.index and pd.notna(row["market_mortgage_rate"]):
+        market_mortgage_rate = float(row["market_mortgage_rate"])
+        if market_mortgage_rate > 1.0:
+            market_mortgage_rate = market_mortgage_rate / 100.0
+
     return Instrument(
         name=str(row["name"]).strip(),
         notional=float(row["notional"]),
@@ -90,6 +118,10 @@ def _row_to_instrument(row: pd.Series) -> Instrument:
         payment_freq=payment_freq,
         repricing_years=repricing_years,
         side=side,
+        prepay_enabled=prepay_enabled,
+        base_cpr=base_cpr,
+        age_months=age_months,
+        market_mortgage_rate=market_mortgage_rate,
     )
 
 
@@ -136,5 +168,11 @@ def instruments_to_dataframe(
             "maturity_years": inst.maturity_years,
             "payment_freq": inst.payment_freq,
             "repricing_years": inst.repricing_years,
+            "prepay_enabled": int(bool(inst.prepay_enabled)),
+            "base_cpr": "" if inst.base_cpr is None else inst.base_cpr,
+            "age_months": inst.age_months,
+            "market_mortgage_rate": (
+                "" if inst.market_mortgage_rate is None else inst.market_mortgage_rate
+            ),
         })
     return pd.DataFrame(rows)

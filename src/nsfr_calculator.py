@@ -66,6 +66,17 @@ class NsfrResult:
 
 
 def _residual_maturity_years(inst: Instrument) -> float:
+    """
+    Residual maturity for NSFR ASF/RSF.
+
+    Prepayable amortising assets use principal-weighted average life (WAL)
+    so CPR shortens required stable funding tenor versus contractual maturity.
+    """
+    if (
+        getattr(inst, "instrument_type", None) == "amortising"
+        and getattr(inst, "prepay_enabled", False)
+    ):
+        return max(inst.wal_years(), 1 / 365)
     return max(inst.maturity_years, inst.repricing_years)
 
 
@@ -146,6 +157,11 @@ def _rsf_factor_asset(instrument: Instrument) -> tuple[float, str]:
         return RSF_HQLA_LEVEL2B, "Level 2B HQLA"
 
     if "mortgage" in name:
+        # BCBS: unencumbered residential mortgages ≤35% LTV often 65% RSF;
+        # when WAL < 1Y after CPR, use performing-loan short factor path via maturity.
+        mat = _residual_maturity_years(instrument)
+        if mat < ONE_YEAR:
+            return RSF_PERFORMING_LOAN, "Residential mortgage (WAL <1Y after CPR)"
         return RSF_MORTGAGE, "Residential mortgage"
 
     mat = _residual_maturity_years(instrument)

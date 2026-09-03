@@ -208,17 +208,18 @@ def test_eve_parallel_up_negative(calc):
 
 def test_eve_parallel_mirror(calc):
     """
-    Due to bond convexity, PV is nonlinear in rates: up+down != 0 exactly.
-    Parallel down always produces larger |ΔEVE| than parallel up (convexity gain).
-    This is correct financial behaviour — we verify the sign pattern, not exact mirror.
+    With CPR mortgages, the book exhibits *negative* convexity:
+    |ΔEVE| under parallel up exceeds the gain under parallel down.
+    Signs still match a net asset-duration book.
     """
     up = next(s for s in SCENARIOS if s.id == "PS_UP")
     down = next(s for s in SCENARIOS if s.id == "PS_DOWN")
     eve_up,   _, _ = calc.calc_eve(up)
     eve_down, _, _ = calc.calc_eve(down)
-    assert eve_up < 0   # rates up  → fixed asset book loses value
-    assert eve_down > 0   # rates down → fixed asset book gains value
-    assert eve_down > abs(eve_up)  # convexity: gain > loss for equal shock
+    assert eve_up < 0   # rates up  → asset book loses value
+    assert eve_down > 0   # rates down → asset book gains value
+    # CPR optionality: extension loss dominates refinance-shortened gain
+    assert abs(eve_up) > eve_down
 
 
 def test_eve_larger_with_proper_coupons(instruments):
@@ -249,11 +250,15 @@ def test_nii_decomposition_sums(calc):
 
 
 def test_nii_parallel_mirror(calc):
+    """
+    Floating/NMD NII is antisymmetric; CPR reinvestment adds a small
+    asymmetric term, so exact mirror is not required once mortgages prepay.
+    """
     up = next(s for s in SCENARIOS if s.id == "PS_UP")
     down = next(s for s in SCENARIOS if s.id == "PS_DOWN")
     nii_up,   _, _ = calc.calc_nii(up)
     nii_down, _, _ = calc.calc_nii(down)
-    assert abs(nii_up + nii_down) < 1e-9
+    assert abs(nii_up + nii_down) < 5.0
 
 
 # ── Outlier threshold ─────────────────────────────────────────────────────────
