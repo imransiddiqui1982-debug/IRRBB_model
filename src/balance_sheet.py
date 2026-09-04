@@ -86,12 +86,22 @@ def get_instruments() -> tuple[list[Instrument], list[Instrument]]:
             age_months=24,
         ),
         Instrument(
-            name="Agency MBS Pass-Through (30Y)",
-            notional=300, coupon_pct=4.80,
+            name="Ginnie Mae MBS Pass-Through",
+            notional=150, coupon_pct=4.50,
             instrument_type="mbs",
-            maturity_years=15.0,  # WAL proxy for 30Y pool
+            maturity_years=15.0,
             payment_freq=12, side="asset",
             age_months=36,
+            mbs_level="ginnie",
+        ),
+        Instrument(
+            name="Fannie/Freddie Agency MBS",
+            notional=150, coupon_pct=4.80,
+            instrument_type="mbs",
+            maturity_years=15.0,
+            payment_freq=12, side="asset",
+            age_months=36,
+            mbs_level="agency",
         ),
         Instrument(
             name="Fixed Gov Bonds (15Y)",

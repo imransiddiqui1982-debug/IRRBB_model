@@ -76,7 +76,22 @@ class LcrResult:
 
 
 def _classify_hqla(instrument: Instrument) -> str | None:
-    """Map an asset to HQLA level, or None if not HQLA-eligible."""
+    """
+    Map an asset to HQLA level, or None if not HQLA-eligible.
+
+    MBS taxonomy (CSV ``mbs_level``):
+      ginnie  → Level 1 (0% haircut) — Ginnie Mae / full faith and credit
+      agency  → Level 2A (15% haircut) — Fannie / Freddie
+      private → not HQLA-eligible — private-label RMBS
+    """
+    from .prepayment import (
+        MBS_LEVEL_AGENCY,
+        MBS_LEVEL_GINNIE,
+        MBS_LEVEL_PRIVATE,
+        infer_mbs_level_from_name,
+        normalize_mbs_level,
+    )
+
     name = instrument.name.lower()
     if any(k in name for k in ("cash", "central bank", "reserve")):
         return "level_1"
@@ -86,11 +101,23 @@ def _classify_hqla(instrument: Instrument) -> str | None:
         return "level_1"
     if "covered bond" in name:
         return "level_2a"
-    if "mbs" in name or "mortgage-backed" in name or "mortgage backed" in name:
-        # Agency / GSE pass-through treated as Level 2A for this prototype
+
+    mbs_level = normalize_mbs_level(getattr(instrument, "mbs_level", ""))
+    if not mbs_level and (
+        instrument.instrument_type == "mbs"
+        or "mbs" in name
+        or "mortgage-backed" in name
+        or "mortgage backed" in name
+    ):
+        mbs_level = infer_mbs_level_from_name(instrument.name)
+
+    if mbs_level == MBS_LEVEL_GINNIE:
+        return "level_1"
+    if mbs_level == MBS_LEVEL_AGENCY:
         return "level_2a"
-    if instrument.instrument_type == "mbs":
-        return "level_2a"
+    if mbs_level == MBS_LEVEL_PRIVATE:
+        return None
+
     if instrument.maturity_years <= THIRTY_DAYS and "bill" in name:
         return "level_1"
     return None

@@ -54,6 +54,62 @@ DEFAULT_SHOCK_CPR_PCT: dict[str, float] = {
     "SHORT_DOWN": 18.0,
 }
 
+# Matching PSA multiples (100 = 100% PSA ≈ 6% CPR when seasoned)
+DEFAULT_SHOCK_PSA_PCT: dict[str, float] = {
+    "BASE": 100.0,
+    "PS_UP": 50.0,
+    "PS_DOWN": 400.0,
+    "STEEPENER": 125.0,
+    "FLATTENER": 80.0,
+    "SHORT_UP": 60.0,
+    "SHORT_DOWN": 300.0,
+}
+
+# MBS HQLA / NSFR taxonomy (CSV ``mbs_level``)
+MBS_LEVEL_GINNIE = "ginnie"       # Ginnie Mae — Level 1
+MBS_LEVEL_AGENCY = "agency"       # Fannie / Freddie — Level 2A
+MBS_LEVEL_PRIVATE = "private"     # Private-label RMBS — not HQLA
+VALID_MBS_LEVELS = {MBS_LEVEL_GINNIE, MBS_LEVEL_AGENCY, MBS_LEVEL_PRIVATE, ""}
+
+
+def normalize_mbs_level(raw: str | None) -> str:
+    """
+    Map CSV / UI labels to ``ginnie`` | ``agency`` | ``private`` | ``""``.
+
+    Accepts: ginnie, gnma, ginnie_mae, level_1,
+             agency, fannie, freddie, gse, level_2a,
+             private, plmbs, ineligible, none, n/a
+    """
+    if raw is None:
+        return ""
+    s = str(raw).strip().lower().replace(" ", "_").replace("-", "_")
+    if s in ("", "nan", "none", "n/a", "na"):
+        return ""
+    if s in ("ginnie", "ginnie_mae", "gnma", "level_1", "level1", "l1"):
+        return MBS_LEVEL_GINNIE
+    if s in (
+        "agency", "fannie", "freddie", "fannie_mae", "freddie_mac",
+        "gse", "level_2a", "level2a", "l2a",
+    ):
+        return MBS_LEVEL_AGENCY
+    if s in ("private", "private_label", "plmbs", "rmbs", "ineligible", "not_eligible"):
+        return MBS_LEVEL_PRIVATE
+    return s if s in VALID_MBS_LEVELS else ""
+
+
+def infer_mbs_level_from_name(name: str) -> str:
+    """Fallback when CSV omits ``mbs_level``."""
+    n = name.lower()
+    if "ginnie" in n or "gnma" in n:
+        return MBS_LEVEL_GINNIE
+    if "fannie" in n or "freddie" in n or "agency" in n or "gse" in n:
+        return MBS_LEVEL_AGENCY
+    if "private" in n or "plmbs" in n:
+        return MBS_LEVEL_PRIVATE
+    if "mbs" in n or "mortgage-backed" in n or "mortgage backed" in n:
+        return MBS_LEVEL_AGENCY
+    return ""
+
 
 @dataclass(frozen=True)
 class PrepaymentParams:
@@ -232,14 +288,19 @@ class ShockCprTable:
             return float(self.cpr_by_key[scenario_id])
         return self.base_cpr()
 
-    def as_pct_dataframe(self) -> "pd.DataFrame":
+    def as_pct_dataframe(self, psa_by_key: dict[str, float] | None = None) -> "pd.DataFrame":
         import pandas as pd
         rows = []
         for key, frac in self.cpr_by_key.items():
+            psa = None
+            if psa_by_key and key in psa_by_key:
+                psa = float(psa_by_key[key])
+            else:
+                psa = round(frac / 0.06 * 100.0, 1) if frac > 0 else 0.0
             rows.append({
                 "Environment": key,
                 "CPR (%)": round(frac * 100.0, 2),
-                "PSA (% of std)": round(frac / 0.06 * 100.0, 1) if frac > 0 else 0.0,
+                "PSA (%)": round(psa, 1),
             })
         return pd.DataFrame(rows)
 

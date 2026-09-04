@@ -24,7 +24,7 @@ from src.nmd_refinement import refine_nmd_deposits, merge_nmd_into_balance_sheet
 from src.calculator import IRRBBCalculator, suggest_irs_hedges  # noqa: E402
 from src.liquidity_ratios import compute_liquidity_ratios_with_workbook  # noqa: E402
 from src.market_curve import get_live_yield_curve  # noqa: E402
-from src.prepayment import DEFAULT_SHOCK_CPR_PCT, ShockCprTable  # noqa: E402
+from src.prepayment import DEFAULT_SHOCK_CPR_PCT, DEFAULT_SHOCK_PSA_PCT, ShockCprTable  # noqa: E402
 from src.scenarios import SCENARIOS  # noqa: E402
 from src.time_buckets import BUCKET_LABELS, N_BUCKETS  # noqa: E402
 from src.yield_curve import YieldCurve  # noqa: E402
@@ -349,34 +349,27 @@ with st.sidebar:
     st.markdown("<p class='section-label'>Mortgage / MBS CPR</p>",
                 unsafe_allow_html=True)
     use_custom_cpr = st.checkbox(
-        "Use custom CPR by rate-shock scenario",
+        "Use custom CPR / PSA by rate-shock scenario",
         value=True,
         help=(
-            "Applies to mortgage loans and MBS for EVE and NII only. "
-            "LCR / NSFR use the base book and are not recalculated from these CPRs."
+            "Enter one CPR % and one PSA % for Base and each BCBS shock. "
+            "Choose which speed drives EVE/NII. LCR/NSFR ignore these inputs."
         ),
     )
-    cpr_input_mode = st.radio(
-        "Input mode",
+    apply_speed = st.radio(
+        "Apply to EVE / NII using",
         ["CPR %", "PSA %"],
         horizontal=True,
         disabled=not use_custom_cpr,
-        help="CPR % = annual constant prepayment. PSA % = multiple of the PSA standard (100 ≈ 6% CPR when seasoned).",
+        help="CPR % = annual constant prepayment. PSA % = multiple of PSA standard (100 ≈ 6% CPR when seasoned).",
     )
     shock_cpr_inputs: dict[str, float] = {}
+    shock_psa_inputs: dict[str, float] = {}
     if use_custom_cpr:
-        st.caption("Enter speeds for base and each BCBS shock (higher CPR when rates fall).")
-        defaults = DEFAULT_SHOCK_CPR_PCT
-        if cpr_input_mode == "PSA %":
-            defaults = {
-                "BASE": 100.0,
-                "PS_UP": 50.0,
-                "PS_DOWN": 400.0,
-                "STEEPENER": 125.0,
-                "FLATTENER": 80.0,
-                "SHORT_UP": 60.0,
-                "SHORT_DOWN": 300.0,
-            }
+        st.caption(
+            "One CPR and one PSA per shock environment "
+            "(typically higher speeds when rates fall)."
+        )
         labels = {
             "BASE": "Base (no shock)",
             "PS_UP": "Parallel Up",
@@ -387,15 +380,25 @@ with st.sidebar:
             "SHORT_DOWN": "Short Rates Down",
         }
         for key, label in labels.items():
-            shock_cpr_inputs[key] = st.number_input(
-                f"{label}",
-                min_value=0.0,
-                max_value=1000.0 if cpr_input_mode == "PSA %" else 100.0,
-                value=float(defaults[key]),
-                step=1.0,
-                key=f"cpr_{key}",
-                disabled=not use_custom_cpr,
-            )
+            c1, c2 = st.columns(2)
+            with c1:
+                shock_cpr_inputs[key] = st.number_input(
+                    f"{label} — CPR %",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=float(DEFAULT_SHOCK_CPR_PCT[key]),
+                    step=0.5,
+                    key=f"cpr_{key}",
+                )
+            with c2:
+                shock_psa_inputs[key] = st.number_input(
+                    f"{label} — PSA %",
+                    min_value=0.0,
+                    max_value=1000.0,
+                    value=float(DEFAULT_SHOCK_PSA_PCT[key]),
+                    step=5.0,
+                    key=f"psa_{key}",
+                )
 
     st.divider()
 
@@ -447,9 +450,10 @@ def run_model(
     curve_tenors: tuple[float, ...] | None,
     curve_rates: tuple[float, ...] | None,
     use_custom_cpr: bool = False,
-    cpr_mode: str = "CPR %",
+    apply_speed: str = "CPR %",
     cpr_pct_items: tuple[tuple[str, float], ...] = (),
-    _model_version: int = 6,
+    psa_pct_items: tuple[tuple[str, float], ...] = (),
+    _model_version: int = 7,
 ):
     if csv_bytes:
         assets, liabilities = load_instruments_from_csv(io.BytesIO(csv_bytes))
@@ -469,12 +473,14 @@ def run_model(
         curve = YieldCurve()
 
     cpr_table = None
-    if use_custom_cpr and cpr_pct_items:
-        pct_map = dict(cpr_pct_items)
-        if cpr_mode == "PSA %":
-            cpr_table = ShockCprTable.from_psa_map(pct_map)
+    psa_map: dict[str, float] = {}
+    if use_custom_cpr:
+        cpr_map = dict(cpr_pct_items)
+        psa_map = dict(psa_pct_items)
+        if apply_speed == "PSA %":
+            cpr_table = ShockCprTable.from_psa_map(psa_map or DEFAULT_SHOCK_PSA_PCT)
         else:
-            cpr_table = ShockCprTable.from_pct_map(pct_map)
+            cpr_table = ShockCprTable.from_pct_map(cpr_map or DEFAULT_SHOCK_CPR_PCT)
 
     calc = IRRBBCalculator(
         assets,
@@ -487,7 +493,10 @@ def run_model(
     gap = calc.repricing_gap()
     maturity_gap = calc.bucket_maturity_gap()
     dv01_gap = calc.bucket_dv01_gap()
-    return calc, results, gap, maturity_gap, dv01_gap, assets, liabilities, nmd_result, curve, cpr_table
+    return (
+        calc, results, gap, maturity_gap, dv01_gap,
+        assets, liabilities, nmd_result, curve, cpr_table, psa_map, apply_speed,
+    )
 
 
 # Live / stylised curve for EVE-NII discounting
@@ -529,7 +538,10 @@ if use_nmd and not nmd_payload:
     )
     st.stop()
 try:
-    calc, results, gap, maturity_gap, dv01_gap, assets, liabilities, nmd_result, curve, cpr_table = run_model(
+    (
+        calc, results, gap, maturity_gap, dv01_gap,
+        assets, liabilities, nmd_result, curve, cpr_table, psa_map, apply_speed_used,
+    ) = run_model(
         float(tier1),
         csv_payload,
         nmd_payload,
@@ -538,8 +550,9 @@ try:
         curve_tenors_t,
         curve_rates_t,
         use_custom_cpr,
-        cpr_input_mode,
+        apply_speed,
         tuple(sorted(shock_cpr_inputs.items())) if use_custom_cpr else (),
+        tuple(sorted(shock_psa_inputs.items())) if use_custom_cpr else (),
     )
 except UnicodeDecodeError:
     st.error(
@@ -614,12 +627,19 @@ c6.metric(
 )
 
 if cpr_table is not None:
-    with st.expander("Mortgage / MBS CPR by shock (EVE & NII only)", expanded=False):
+    with st.expander(
+        f"Mortgage / MBS CPR & PSA by shock (applied via {apply_speed_used})",
+        expanded=False,
+    ):
         st.caption(
-            "These speeds apply to amortising mortgages and MBS cash-flow schedules "
-            "under each BCBS shock. LCR and NSFR are unchanged by this table."
+            "Both CPR % and PSA % are entered per shock. "
+            f"EVE/NII currently use **{apply_speed_used}**. LCR/NSFR ignore this table."
         )
-        st.dataframe(cpr_table.as_pct_dataframe(), use_container_width=True, hide_index=True)
+        st.dataframe(
+            cpr_table.as_pct_dataframe(psa_by_key=psa_map or None),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 st.divider()
 

@@ -112,6 +112,8 @@ class Instrument:
     use_hf_chronos:   bool = False
     historical_cpr:   tuple[float, ...] | None = None
     prepay_params:    PrepaymentParams | None = field(default=None, repr=False)
+    mbs_level:        str = ""   # ginnie | agency | private (HQLA / NSFR)
+    encumbered:       bool = False  # NSFR: encumbered >1Y → 100% RSF
     cashflows:        list[CashFlow] = field(default_factory=list, repr=False)
 
     def __post_init__(self):
@@ -127,6 +129,9 @@ class Instrument:
             and ("mortgage" in name_l or "mbs" in name_l or "mortgage-backed" in name_l)
         ):
             self.prepay_enabled = True
+        if self.instrument_type == "mbs" or "mbs" in name_l:
+            from .prepayment import infer_mbs_level_from_name, normalize_mbs_level
+            self.mbs_level = normalize_mbs_level(self.mbs_level) or infer_mbs_level_from_name(self.name)
         if (
             self.prepay_enabled
             and self.instrument_type in PREPAYABLE_TYPES

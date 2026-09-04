@@ -34,6 +34,8 @@ OPTIONAL_COLUMNS = [
     "base_cpr",
     "age_months",
     "market_mortgage_rate",
+    "mbs_level",
+    "encumbered",
 ]
 VALID_TYPES = {"bullet_fixed", "bullet_floating", "amortising", "mbs", "demand_deposit"}
 VALID_SIDES = {"asset", "liability"}
@@ -109,6 +111,15 @@ def _row_to_instrument(row: pd.Series) -> Instrument:
         if market_mortgage_rate > 1.0:
             market_mortgage_rate = market_mortgage_rate / 100.0
 
+    mbs_level = ""
+    if "mbs_level" in row.index and pd.notna(row["mbs_level"]):
+        from .prepayment import normalize_mbs_level
+        mbs_level = normalize_mbs_level(str(row["mbs_level"]))
+
+    encumbered = False
+    if "encumbered" in row.index and pd.notna(row["encumbered"]):
+        encumbered = str(row["encumbered"]).strip().lower() in ("1", "true", "yes", "y", "t")
+
     return Instrument(
         name=str(row["name"]).strip(),
         notional=float(row["notional"]),
@@ -122,6 +133,8 @@ def _row_to_instrument(row: pd.Series) -> Instrument:
         base_cpr=base_cpr,
         age_months=age_months,
         market_mortgage_rate=market_mortgage_rate,
+        mbs_level=mbs_level,
+        encumbered=encumbered,
     )
 
 
@@ -174,5 +187,7 @@ def instruments_to_dataframe(
             "market_mortgage_rate": (
                 "" if inst.market_mortgage_rate is None else inst.market_mortgage_rate
             ),
+            "mbs_level": getattr(inst, "mbs_level", "") or "",
+            "encumbered": int(bool(getattr(inst, "encumbered", False))),
         })
     return pd.DataFrame(rows)

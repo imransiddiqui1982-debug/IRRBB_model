@@ -27,11 +27,33 @@ def test_hqla_from_sample_balance_sheet(instruments):
     assets, _ = instruments
     l1, l2a, l2b, df = compute_hqla_stock(assets)
     assert l1 > 0
-    # Agency MBS is classified Level 2A in the sample book
+    # Ginnie Mae MBS → Level 1; Fannie/Freddie → Level 2A
     assert l2a > 0
     assert l2b == 0.0
     assert not df.empty
-    assert "Cash" in df["Instrument"].iloc[0] or any("Cash" in n for n in df["Instrument"])
+    assert any("Ginnie" in n or "Cash" in n or "Gov" in n or "T-Bill" in n for n in df["Instrument"])
+    assert any("Fannie" in n or "Freddie" in n or "Agency" in n for n in df["Instrument"])
+
+
+def test_mbs_hqla_grid():
+    ginnie = Instrument(
+        "Ginnie Mae MBS", 100, 4.5, "mbs", 15.0,
+        payment_freq=12, side="asset", mbs_level="ginnie",
+    )
+    agency = Instrument(
+        "Fannie MBS", 100, 4.8, "mbs", 15.0,
+        payment_freq=12, side="asset", mbs_level="agency",
+    )
+    private = Instrument(
+        "Private-label RMBS", 100, 5.5, "mbs", 15.0,
+        payment_freq=12, side="asset", mbs_level="private",
+    )
+    from src.lcr_calculator import _classify_hqla, HQLA_HAIRCUT
+    assert _classify_hqla(ginnie) == "level_1"
+    assert HQLA_HAIRCUT["level_1"] == 0.0
+    assert _classify_hqla(agency) == "level_2a"
+    assert HQLA_HAIRCUT["level_2a"] == 0.15
+    assert _classify_hqla(private) is None
 
 
 def test_lcr_sample_balance_sheet(instruments):

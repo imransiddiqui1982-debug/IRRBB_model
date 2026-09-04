@@ -45,12 +45,13 @@ ASF_LONG_TERM = 1.00
 
 # BCBS NSFR RSF factors (assets)
 RSF_CASH_RESERVES = 0.00
-RSF_HQLA_LEVEL1 = 0.05
-RSF_HQLA_LEVEL2A = 0.15
+RSF_HQLA_LEVEL1 = 0.05          # Ginnie Mae MBS unencumbered / Level 1
+RSF_HQLA_LEVEL2A = 0.15         # Agency (Fannie/Freddie) MBS unencumbered
 RSF_HQLA_LEVEL2B = 0.50
-RSF_MORTGAGE = 0.65
-RSF_PERFORMING_LOAN = 0.85
+RSF_MORTGAGE = 0.65             # Residential mortgages ≥1Y
+RSF_PERFORMING_LOAN = 0.85      # Other loans ≥1Y
 RSF_OTHER_LONG_TERM = 1.00
+RSF_ENCUMBERED = 1.00           # Encumbered >1Y
 
 
 @dataclass
@@ -138,8 +139,50 @@ def _classify_liability_asf(
 
 
 def _rsf_factor_asset(instrument: Instrument) -> tuple[float, str]:
-    """Return BCBS RSF factor and category for an asset."""
+    """
+    Return BCBS RSF factor and category for an asset.
+
+    MBS / mortgage grid (unencumbered unless ``encumbered=True``):
+      Ginnie Mae MBS (Level 1)     → 5%
+      Agency MBS (Level 2A)        → 15%
+      Residential mortgages ≥1Y    → 65%
+      Other loans ≥1Y              → 85%
+      Encumbered >1Y               → 100%
+      Private-label RMBS           → treated as other loan / long-term (not HQLA)
+    """
+    from .prepayment import (
+        MBS_LEVEL_AGENCY,
+        MBS_LEVEL_GINNIE,
+        MBS_LEVEL_PRIVATE,
+        infer_mbs_level_from_name,
+        normalize_mbs_level,
+    )
+
     name = instrument.name.lower()
+    mat = _residual_maturity_years(instrument)
+    encumbered = bool(getattr(instrument, "encumbered", False))
+
+    if encumbered and mat > ONE_YEAR:
+        return RSF_ENCUMBERED, "Encumbered asset (>1Y)"
+
+    mbs_level = normalize_mbs_level(getattr(instrument, "mbs_level", ""))
+    if not mbs_level and (
+        instrument.instrument_type == "mbs"
+        or "mbs" in name
+        or "mortgage-backed" in name
+        or "mortgage backed" in name
+    ):
+        mbs_level = infer_mbs_level_from_name(instrument.name)
+
+    if mbs_level == MBS_LEVEL_GINNIE:
+        return RSF_HQLA_LEVEL1, "Ginnie Mae MBS (Level 1, unencumbered)"
+    if mbs_level == MBS_LEVEL_AGENCY:
+        return RSF_HQLA_LEVEL2A, "Agency MBS (Level 2A, unencumbered)"
+    if mbs_level == MBS_LEVEL_PRIVATE:
+        if mat >= ONE_YEAR:
+            return RSF_PERFORMING_LOAN, "Private-label RMBS (≥1Y, not HQLA)"
+        return RSF_PERFORMING_LOAN, "Private-label RMBS (<1Y, not HQLA)"
+
     hqla = _classify_hqla(instrument)
 
     if hqla == "level_1":
@@ -153,19 +196,21 @@ def _rsf_factor_asset(instrument: Instrument) -> tuple[float, str]:
     if hqla == "level_2b":
         return RSF_HQLA_LEVEL2B, "Level 2B HQLA"
 
-    if "mortgage" in name and "mbs" not in name and "backed" not in name:
-        mat = _residual_maturity_years(instrument)
-        if mat < ONE_YEAR:
-            return RSF_PERFORMING_LOAN, "Residential mortgage (WAL <1Y after CPR)"
-        return RSF_MORTGAGE, "Residential mortgage"
+    # Whole-loan residential mortgages (not MBS)
+    if (
+        instrument.instrument_type == "amortising"
+        or ("mortgage" in name and "mbs" not in name and "backed" not in name)
+    ):
+        if mat >= ONE_YEAR:
+            return RSF_MORTGAGE, "Residential mortgage (≥1Y)"
+        return RSF_PERFORMING_LOAN, "Residential mortgage (<1Y)"
 
-    mat = _residual_maturity_years(instrument)
     if instrument.instrument_type in (
         "bullet_fixed", "bullet_floating", "amortising", "mbs", "demand_deposit",
     ):
         if mat >= ONE_YEAR:
-            return RSF_PERFORMING_LOAN, "Performing loan / bond (≥1Y)"
-        return RSF_PERFORMING_LOAN, "Performing loan / bond (<1Y)"
+            return RSF_PERFORMING_LOAN, "Other loan / bond (≥1Y)"
+        return RSF_PERFORMING_LOAN, "Other loan / bond (<1Y)"
 
     if mat >= ONE_YEAR:
         return RSF_OTHER_LONG_TERM, "Other long-term asset"

@@ -94,9 +94,12 @@ One row per instrument:
 | `prepay_enabled` | No | `1`/`Y` enables CPR on amortising loans (auto-on if name contains "mortgage") |
 | `base_cpr` | No | Fixed annual CPR override (fraction or %); blank → S-curve from rate incentive |
 | `age_months` | No | Loan age for PSA seasoning (default 0) |
-| `market_mortgage_rate` | No | Primary mortgage rate (decimal or %); blank → curve + 150bp spread |
+| `mbs_level` | No | For MBS: `ginnie` (L1) \| `agency` (L2A) \| `private` (not HQLA) |
+| `encumbered` | No | `1`/`Y` → NSFR RSF 100% if maturity >1Y |
 
-**Mortgage / MBS CPR:** Amortising mortgages and `mbs` pass-throughs use PSA × S-curve by default. In Streamlit, enable **Use custom CPR by rate-shock scenario** to enter CPR % or PSA % for Base + each BCBS shock — those speeds drive **EVE and NII only** (LCR/NSFR unchanged). Optional Hugging Face Chronos blend: `pip install -r requirements-hf.txt`.
+**MBS HQLA / NSFR:** Ginnie Mae → LCR Level 1 (0% haircut), NSFR RSF 5%. Fannie/Freddie agency → LCR Level 2A (15% haircut), NSFR RSF 15%. Private-label RMBS → not HQLA; NSFR like other loans (85% if ≥1Y). Whole-loan residential mortgages ≥1Y → RSF 65%. Encumbered >1Y → RSF 100%.
+
+**Mortgage / MBS CPR:** Enter **one CPR % and one PSA %** for Base + each BCBS shock in the Streamlit sidebar; choose which drives EVE/NII. LCR/NSFR ignore those speeds.
 
 **Tip:** When NMD is enabled, leave demand deposits out of the CSV (or they are replaced). Use the CSV for assets + wholesale funding only.
 

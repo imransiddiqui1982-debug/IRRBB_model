@@ -49,9 +49,31 @@ def test_asf_includes_tier1(instruments):
 def test_rsf_mortgage_factor(instruments):
     assets, _ = instruments
     _, rsf_df = compute_rsf(assets)
-    mortgage = rsf_df[rsf_df["Instrument"].str.contains("Mortgage", case=False)]
+    mortgage = rsf_df[rsf_df["Instrument"].str.contains("Fixed-Rate Mortgages", case=False)]
     assert not mortgage.empty
     assert mortgage.iloc[0]["RSF Factor (%)"] == RSF_MORTGAGE * 100
+
+
+def test_rsf_mbs_grid():
+    from src.nsfr_calculator import _rsf_factor_asset, RSF_HQLA_LEVEL1, RSF_HQLA_LEVEL2A, RSF_ENCUMBERED
+    ginnie = Instrument(
+        "Ginnie Mae MBS", 100, 4.5, "mbs", 15.0,
+        payment_freq=12, side="asset", mbs_level="ginnie",
+    )
+    agency = Instrument(
+        "Agency MBS", 100, 4.8, "mbs", 15.0,
+        payment_freq=12, side="asset", mbs_level="agency",
+    )
+    enc = Instrument(
+        "Agency MBS pledged", 100, 4.8, "mbs", 15.0,
+        payment_freq=12, side="asset", mbs_level="agency", encumbered=True,
+    )
+    f_g, _ = _rsf_factor_asset(ginnie)
+    f_a, _ = _rsf_factor_asset(agency)
+    f_e, _ = _rsf_factor_asset(enc)
+    assert f_g == RSF_HQLA_LEVEL1
+    assert f_a == RSF_HQLA_LEVEL2A
+    assert f_e == RSF_ENCUMBERED
 
 
 def test_rsf_hqla_factor(instruments):
