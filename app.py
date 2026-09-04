@@ -350,62 +350,6 @@ with st.sidebar:
 
     st.divider()
 
-    st.markdown("<p class='section-label'>Mortgage / MBS CPR</p>",
-                unsafe_allow_html=True)
-    use_custom_cpr = st.checkbox(
-        "Use custom CPR / PSA by rate-shock scenario",
-        value=True,
-        help=(
-            "Enter one CPR % and one PSA % for Base and each BCBS shock. "
-            "Choose which speed drives EVE/NII. LCR/NSFR ignore these inputs."
-        ),
-    )
-    apply_speed = st.radio(
-        "Apply to EVE / NII using",
-        ["CPR %", "PSA %"],
-        horizontal=True,
-        disabled=not use_custom_cpr,
-        help="CPR % = annual constant prepayment. PSA % = multiple of PSA standard (100 ≈ 6% CPR when seasoned).",
-    )
-    shock_cpr_inputs: dict[str, float] = {}
-    shock_psa_inputs: dict[str, float] = {}
-    if use_custom_cpr:
-        st.caption(
-            "One CPR and one PSA per shock environment "
-            "(typically higher speeds when rates fall)."
-        )
-        labels = {
-            "BASE": "Base (no shock)",
-            "PS_UP": "Parallel Up",
-            "PS_DOWN": "Parallel Down",
-            "STEEPENER": "Steepener",
-            "FLATTENER": "Flattener",
-            "SHORT_UP": "Short Rates Up",
-            "SHORT_DOWN": "Short Rates Down",
-        }
-        for key, label in labels.items():
-            c1, c2 = st.columns(2)
-            with c1:
-                shock_cpr_inputs[key] = st.number_input(
-                    f"{label} — CPR %",
-                    min_value=0.0,
-                    max_value=100.0,
-                    value=float(DEFAULT_SHOCK_CPR_PCT[key]),
-                    step=0.5,
-                    key=f"cpr_{key}",
-                )
-            with c2:
-                shock_psa_inputs[key] = st.number_input(
-                    f"{label} — PSA %",
-                    min_value=0.0,
-                    max_value=1000.0,
-                    value=float(DEFAULT_SHOCK_PSA_PCT[key]),
-                    step=5.0,
-                    key=f"psa_{key}",
-                )
-
-    st.divider()
-
     st.markdown("<p class='section-label'>Active Scenario</p>",
                 unsafe_allow_html=True)
     selected_name = st.radio(
@@ -429,6 +373,64 @@ with st.sidebar:
             f"</div>",
             unsafe_allow_html=True,
         )
+
+    st.divider()
+
+    st.markdown("<p class='section-label'>Mortgage / MBS CPR</p>",
+                unsafe_allow_html=True)
+    use_custom_cpr = st.checkbox(
+        "Use custom CPR / PSA for active scenario",
+        value=True,
+        help=(
+            "Shows one CPR % and one PSA % for the Active Scenario only. "
+            "Values for other scenarios are kept and used in All Scenarios EVE/NII. "
+            "LCR/NSFR ignore these inputs."
+        ),
+    )
+    apply_speed = st.radio(
+        "Apply to EVE / NII using",
+        ["CPR %", "PSA %"],
+        horizontal=True,
+        disabled=not use_custom_cpr,
+        help="CPR % = annual constant prepayment. PSA % = multiple of PSA standard (100 ≈ 6% CPR when seasoned).",
+    )
+
+    # Persist CPR/PSA for every environment; only edit the active scenario in the UI.
+    if "shock_cpr_store" not in st.session_state:
+        st.session_state["shock_cpr_store"] = dict(DEFAULT_SHOCK_CPR_PCT)
+    if "shock_psa_store" not in st.session_state:
+        st.session_state["shock_psa_store"] = dict(DEFAULT_SHOCK_PSA_PCT)
+
+    shock_cpr_inputs: dict[str, float] = dict(st.session_state["shock_cpr_store"])
+    shock_psa_inputs: dict[str, float] = dict(st.session_state["shock_psa_store"])
+
+    if use_custom_cpr:
+        active_key = selected_scenario.id
+        st.caption(f"Speeds for **{selected_scenario.name}** only. Switch scenario above to edit another.")
+        c1, c2 = st.columns(2)
+        with c1:
+            new_cpr = st.number_input(
+                "CPR %",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(shock_cpr_inputs.get(active_key, DEFAULT_SHOCK_CPR_PCT.get(active_key, 6.0))),
+                step=0.5,
+                key=f"cpr_active_{active_key}",
+            )
+        with c2:
+            new_psa = st.number_input(
+                "PSA %",
+                min_value=0.0,
+                max_value=1000.0,
+                value=float(shock_psa_inputs.get(active_key, DEFAULT_SHOCK_PSA_PCT.get(active_key, 100.0))),
+                step=5.0,
+                key=f"psa_active_{active_key}",
+            )
+        st.session_state["shock_cpr_store"][active_key] = float(new_cpr)
+        st.session_state["shock_psa_store"][active_key] = float(new_psa)
+        shock_cpr_inputs[active_key] = float(new_cpr)
+        shock_psa_inputs[active_key] = float(new_psa)
+
     st.divider()
     st.caption("Upload balance sheet CSV and/or refine NMD deposits before IRRBB.")
 
@@ -457,7 +459,7 @@ def run_model(
     apply_speed: str = "CPR %",
     cpr_pct_items: tuple[tuple[str, float], ...] = (),
     psa_pct_items: tuple[tuple[str, float], ...] = (),
-    _model_version: int = 7,
+    _model_version: int = 8,
 ):
     if csv_bytes:
         assets, liabilities = load_instruments_from_csv(io.BytesIO(csv_bytes))
