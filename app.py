@@ -21,10 +21,14 @@ import streamlit as st  # noqa: E402
 from src.balance_sheet import get_instruments  # noqa: E402
 from src.load_balance_sheet import load_instruments_from_csv  # noqa: E402
 from src.nmd_refinement import refine_nmd_deposits, merge_nmd_into_balance_sheet, load_customer_nmd  # noqa: E402
+from src.prepayment import (  # noqa: E402
+    DEFAULT_SHOCK_CPR_PCT,
+    DEFAULT_SHOCK_PSA_PCT,
+    ShockCprTable,
+)
 from src.calculator import IRRBBCalculator, suggest_irs_hedges  # noqa: E402
 from src.liquidity_ratios import compute_liquidity_ratios_with_workbook  # noqa: E402
 from src.market_curve import get_live_yield_curve  # noqa: E402
-from src.prepayment import DEFAULT_SHOCK_CPR_PCT, DEFAULT_SHOCK_PSA_PCT, ShockCprTable  # noqa: E402
 from src.scenarios import SCENARIOS  # noqa: E402
 from src.time_buckets import BUCKET_LABELS, N_BUCKETS  # noqa: E402
 from src.yield_curve import YieldCurve  # noqa: E402

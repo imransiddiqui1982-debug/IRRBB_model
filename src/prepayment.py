@@ -6,23 +6,23 @@ Mortgage Constant Prepayment Rate (CPR) methodology for IRRBB.
 Converts annual CPR to periodic Single Monthly Mortality (SMM) and builds
 rate-incentive S-curves used by amortising instruments with prepayment.
 
-CPR (annual) → SMM (periodic):
-    SMM = 1 − (1 − CPR)^(1 / payment_freq)
+CPR (annual) -> SMM (periodic):
+    SMM = 1 - (1 - CPR)^(1 / payment_freq)
 
 Refinance incentive (decimal):
-    incentive = coupon_pct/100 − market_mortgage_rate
+    incentive = coupon_pct/100 - market_mortgage_rate
 
 S-curve CPR (industry standard ALM form):
-    CPR = CPR_min + (CPR_max − CPR_min) / (1 + exp(−steepness × (incentive − midpoint)))
+    CPR = CPR_min + (CPR_max - CPR_min) / (1 + exp(-steepness * (incentive - midpoint)))
 
 Optional Hugging Face Chronos (amazon/chronos-t5-tiny) can refine the base CPR
-level from recent prepayment history when ``use_hf_chronos=True`` and
+level from recent prepayment history when use_hf_chronos=True and
 transformers/chronos-forecasting are installed.
 
 User / UI overrides
 -------------------
 Banks often supply scenario CPR or PSA speeds directly (ALCO assumptions).
-``DEFAULT_SHOCK_CPR_PCT`` and ``ShockCprTable`` hold base + six BCBS scenario
+DEFAULT_SHOCK_CPR_PCT and ShockCprTable hold base + six BCBS scenario
 annual CPR fractions used for mortgages and MBS in EVE/NII.
 """
 
@@ -154,9 +154,9 @@ def s_curve_cpr(
     params: PrepaymentParams | None = None,
 ) -> float:
     """
-    Logistic S-curve CPR from refinance incentive (coupon − market, decimal).
+    Logistic S-curve CPR from refinance incentive (coupon - market, decimal).
 
-    Positive incentive (coupon > market) → higher CPR (borrowers refinance).
+    Positive incentive (coupon > market) -> higher CPR (borrowers refinance).
     """
     p = params or PrepaymentParams()
     x = float(incentive)

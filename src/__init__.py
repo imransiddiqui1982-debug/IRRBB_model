@@ -1,49 +1,70 @@
-from .time_buckets import BCBS_BUCKETS, BUCKET_LABELS, N_BUCKETS, years_to_bucket
-from .cashflows import Instrument, CashFlow
-from .prepayment import (
-    PrepaymentParams,
-    ShockCprTable,
-    cpr_to_smm,
-    effective_cpr,
-    incentive_cpr,
-    s_curve_cpr,
-)
-from .yield_curve import YieldCurve, BASE_CURVE
-from .balance_sheet import get_instruments
-from .load_balance_sheet import load_instruments_from_csv, instruments_to_dataframe
-from .nmd_refinement import refine_nmd_deposits, merge_nmd_into_balance_sheet, NmdRefinementResult
-from .scenarios import SCENARIOS, SCENARIO_MAP, Scenario
-from .calculator import IRRBBCalculator, ScenarioResult
-from .lcr_calculator import compute_lcr, compute_lcr_from_nmd_allocation, LcrResult
-from .nsfr_calculator import compute_nsfr, compute_nsfr_from_nmd_allocation, NsfrResult
-from .liquidity_ratios import compute_liquidity_ratios, LiquidityRatiosResult
+"""IRRBB engine package.
 
-try:
-    from .plots import (
-        plot_nii, plot_eve, plot_repricing_gap,
-        plot_shock_curves, plot_nii_decomposition,
-        plot_instrument_eve_waterfall,
-        plot_yield_curve,
-    )
-except ImportError:  # pragma: no cover — optional viz deps (matplotlib)
-    plot_nii = plot_eve = plot_repricing_gap = None
-    plot_shock_curves = plot_nii_decomposition = None
-    plot_instrument_eve_waterfall = plot_yield_curve = None
+Keep this module lightweight so ``from src.prepayment import ...`` does not
+pull calculator / Streamlit / matplotlib into a circular import on Cloud.
+Import submodules directly, e.g. ``from src.calculator import IRRBBCalculator``.
+"""
 
 __all__ = [
-    'BCBS_BUCKETS', 'BUCKET_LABELS', 'N_BUCKETS', 'years_to_bucket',
-    'Instrument', 'CashFlow',
-    'PrepaymentParams', 'ShockCprTable', 'cpr_to_smm', 'effective_cpr', 'incentive_cpr', 's_curve_cpr',
-    'YieldCurve', 'BASE_CURVE',
-    'get_instruments',
-    'load_instruments_from_csv', 'instruments_to_dataframe',
-    'refine_nmd_deposits', 'merge_nmd_into_balance_sheet', 'NmdRefinementResult',
-    'SCENARIOS', 'SCENARIO_MAP', 'Scenario',
-    'IRRBBCalculator', 'ScenarioResult',
-    'compute_lcr', 'compute_lcr_from_nmd_allocation', 'LcrResult',
-    'compute_nsfr', 'compute_nsfr_from_nmd_allocation', 'NsfrResult',
-    'compute_liquidity_ratios', 'LiquidityRatiosResult',
-    'plot_nii', 'plot_eve', 'plot_repricing_gap',
-    'plot_shock_curves', 'plot_nii_decomposition',
-    'plot_instrument_eve_waterfall', 'plot_yield_curve',
+    "BCBS_BUCKETS",
+    "BUCKET_LABELS",
+    "N_BUCKETS",
+    "years_to_bucket",
+    "Instrument",
+    "CashFlow",
+    "PrepaymentParams",
+    "ShockCprTable",
+    "DEFAULT_SHOCK_CPR_PCT",
+    "DEFAULT_SHOCK_PSA_PCT",
+    "YieldCurve",
+    "BASE_CURVE",
+    "get_instruments",
+    "load_instruments_from_csv",
+    "SCENARIOS",
+    "SCENARIO_MAP",
+    "IRRBBCalculator",
 ]
+
+
+def __getattr__(name: str):
+    """Lazy attribute access for backwards-compatible ``from src import X``."""
+    if name in ("BCBS_BUCKETS", "BUCKET_LABELS", "N_BUCKETS", "years_to_bucket"):
+        from . import time_buckets as m
+        return getattr(m, name)
+    if name in ("Instrument", "CashFlow"):
+        from . import cashflows as m
+        return getattr(m, name)
+    if name in (
+        "PrepaymentParams",
+        "ShockCprTable",
+        "DEFAULT_SHOCK_CPR_PCT",
+        "DEFAULT_SHOCK_PSA_PCT",
+        "cpr_to_smm",
+        "effective_cpr",
+        "incentive_cpr",
+        "s_curve_cpr",
+    ):
+        from . import prepayment as m
+        return getattr(m, name)
+    if name in ("YieldCurve", "BASE_CURVE"):
+        from . import yield_curve as m
+        return getattr(m, name)
+    if name == "get_instruments":
+        from .balance_sheet import get_instruments
+        return get_instruments
+    if name == "load_instruments_from_csv":
+        from .load_balance_sheet import load_instruments_from_csv
+        return load_instruments_from_csv
+    if name in ("SCENARIOS", "SCENARIO_MAP", "Scenario"):
+        from . import scenarios as m
+        return getattr(m, name)
+    if name in ("IRRBBCalculator", "ScenarioResult", "suggest_irs_hedges"):
+        from . import calculator as m
+        return getattr(m, name)
+    if name in ("compute_lcr", "LcrResult"):
+        from . import lcr_calculator as m
+        return getattr(m, name)
+    if name in ("compute_nsfr", "NsfrResult"):
+        from . import nsfr_calculator as m
+        return getattr(m, name)
+    raise AttributeError(f"module 'src' has no attribute {name!r}")

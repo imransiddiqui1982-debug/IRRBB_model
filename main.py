@@ -8,8 +8,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from src import (  # noqa: E402
-    get_instruments, SCENARIOS, IRRBBCalculator, BASE_CURVE,
+from src.balance_sheet import get_instruments  # noqa: E402
+from src.scenarios import SCENARIOS  # noqa: E402
+from src.calculator import IRRBBCalculator  # noqa: E402
+from src.yield_curve import BASE_CURVE  # noqa: E402
+from src.plots import (  # noqa: E402
     plot_nii, plot_eve, plot_repricing_gap, plot_shock_curves,
     plot_nii_decomposition, plot_instrument_eve_waterfall, plot_yield_curve,
 )
