@@ -24,6 +24,7 @@ from src.nmd_refinement import refine_nmd_deposits, merge_nmd_into_balance_sheet
 from src.calculator import IRRBBCalculator, suggest_irs_hedges  # noqa: E402
 from src.liquidity_ratios import compute_liquidity_ratios_with_workbook  # noqa: E402
 from src.market_curve import get_live_yield_curve  # noqa: E402
+from src.prepayment import DEFAULT_SHOCK_CPR_PCT, ShockCprTable  # noqa: E402
 from src.scenarios import SCENARIOS  # noqa: E402
 from src.time_buckets import BUCKET_LABELS, N_BUCKETS  # noqa: E402
 from src.yield_curve import YieldCurve  # noqa: E402
@@ -345,6 +346,59 @@ with st.sidebar:
 
     st.divider()
 
+    st.markdown("<p class='section-label'>Mortgage / MBS CPR</p>",
+                unsafe_allow_html=True)
+    use_custom_cpr = st.checkbox(
+        "Use custom CPR by rate-shock scenario",
+        value=True,
+        help=(
+            "Applies to mortgage loans and MBS for EVE and NII only. "
+            "LCR / NSFR use the base book and are not recalculated from these CPRs."
+        ),
+    )
+    cpr_input_mode = st.radio(
+        "Input mode",
+        ["CPR %", "PSA %"],
+        horizontal=True,
+        disabled=not use_custom_cpr,
+        help="CPR % = annual constant prepayment. PSA % = multiple of the PSA standard (100 ≈ 6% CPR when seasoned).",
+    )
+    shock_cpr_inputs: dict[str, float] = {}
+    if use_custom_cpr:
+        st.caption("Enter speeds for base and each BCBS shock (higher CPR when rates fall).")
+        defaults = DEFAULT_SHOCK_CPR_PCT
+        if cpr_input_mode == "PSA %":
+            defaults = {
+                "BASE": 100.0,
+                "PS_UP": 50.0,
+                "PS_DOWN": 400.0,
+                "STEEPENER": 125.0,
+                "FLATTENER": 80.0,
+                "SHORT_UP": 60.0,
+                "SHORT_DOWN": 300.0,
+            }
+        labels = {
+            "BASE": "Base (no shock)",
+            "PS_UP": "Parallel Up",
+            "PS_DOWN": "Parallel Down",
+            "STEEPENER": "Steepener",
+            "FLATTENER": "Flattener",
+            "SHORT_UP": "Short Rates Up",
+            "SHORT_DOWN": "Short Rates Down",
+        }
+        for key, label in labels.items():
+            shock_cpr_inputs[key] = st.number_input(
+                f"{label}",
+                min_value=0.0,
+                max_value=1000.0 if cpr_input_mode == "PSA %" else 100.0,
+                value=float(defaults[key]),
+                step=1.0,
+                key=f"cpr_{key}",
+                disabled=not use_custom_cpr,
+            )
+
+    st.divider()
+
     st.markdown("<p class='section-label'>Active Scenario</p>",
                 unsafe_allow_html=True)
     selected_name = st.radio(
@@ -392,7 +446,10 @@ def run_model(
     use_nmd: bool,
     curve_tenors: tuple[float, ...] | None,
     curve_rates: tuple[float, ...] | None,
-    _model_version: int = 5,
+    use_custom_cpr: bool = False,
+    cpr_mode: str = "CPR %",
+    cpr_pct_items: tuple[tuple[str, float], ...] = (),
+    _model_version: int = 6,
 ):
     if csv_bytes:
         assets, liabilities = load_instruments_from_csv(io.BytesIO(csv_bytes))
@@ -411,14 +468,26 @@ def run_model(
     else:
         curve = YieldCurve()
 
+    cpr_table = None
+    if use_custom_cpr and cpr_pct_items:
+        pct_map = dict(cpr_pct_items)
+        if cpr_mode == "PSA %":
+            cpr_table = ShockCprTable.from_psa_map(pct_map)
+        else:
+            cpr_table = ShockCprTable.from_pct_map(pct_map)
+
     calc = IRRBBCalculator(
-        assets, liabilities, tier1_capital=tier1_cap, yield_curve=curve,
+        assets,
+        liabilities,
+        tier1_capital=tier1_cap,
+        yield_curve=curve,
+        cpr_table=cpr_table,
     )
     results = calc.run_all(SCENARIOS)
     gap = calc.repricing_gap()
     maturity_gap = calc.bucket_maturity_gap()
     dv01_gap = calc.bucket_dv01_gap()
-    return calc, results, gap, maturity_gap, dv01_gap, assets, liabilities, nmd_result, curve
+    return calc, results, gap, maturity_gap, dv01_gap, assets, liabilities, nmd_result, curve, cpr_table
 
 
 # Live / stylised curve for EVE-NII discounting
@@ -460,7 +529,7 @@ if use_nmd and not nmd_payload:
     )
     st.stop()
 try:
-    calc, results, gap, maturity_gap, dv01_gap, assets, liabilities, nmd_result, curve = run_model(
+    calc, results, gap, maturity_gap, dv01_gap, assets, liabilities, nmd_result, curve, cpr_table = run_model(
         float(tier1),
         csv_payload,
         nmd_payload,
@@ -468,6 +537,9 @@ try:
         use_nmd,
         curve_tenors_t,
         curve_rates_t,
+        use_custom_cpr,
+        cpr_input_mode,
+        tuple(sorted(shock_cpr_inputs.items())) if use_custom_cpr else (),
     )
 except UnicodeDecodeError:
     st.error(
@@ -534,8 +606,20 @@ c5.metric(
     delta="None ✓" if outliers == 0 else f"{outliers} breach(es)",
     delta_color="normal" if outliers == 0 else "inverse",
 )
-c6.metric("Worst |ΔEVE|/T1", f"{worst.delta_eve_pct:.1f}%",
-          delta=worst.scenario.name, delta_color="off")
+c6.metric(
+    "Worst |ΔEVE|/T1",
+    f"{worst.delta_eve_pct:.1f}%",
+    delta=worst.scenario.name,
+    delta_color="off",
+)
+
+if cpr_table is not None:
+    with st.expander("Mortgage / MBS CPR by shock (EVE & NII only)", expanded=False):
+        st.caption(
+            "These speeds apply to amortising mortgages and MBS cash-flow schedules "
+            "under each BCBS shock. LCR and NSFR are unchanged by this table."
+        )
+        st.dataframe(cpr_table.as_pct_dataframe(), use_container_width=True, hide_index=True)
 
 st.divider()
 

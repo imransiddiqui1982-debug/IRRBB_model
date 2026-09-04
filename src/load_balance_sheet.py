@@ -35,7 +35,7 @@ OPTIONAL_COLUMNS = [
     "age_months",
     "market_mortgage_rate",
 ]
-VALID_TYPES = {"bullet_fixed", "bullet_floating", "amortising", "demand_deposit"}
+VALID_TYPES = {"bullet_fixed", "bullet_floating", "amortising", "mbs", "demand_deposit"}
 VALID_SIDES = {"asset", "liability"}
 
 

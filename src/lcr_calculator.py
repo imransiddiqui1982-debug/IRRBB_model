@@ -86,6 +86,11 @@ def _classify_hqla(instrument: Instrument) -> str | None:
         return "level_1"
     if "covered bond" in name:
         return "level_2a"
+    if "mbs" in name or "mortgage-backed" in name or "mortgage backed" in name:
+        # Agency / GSE pass-through treated as Level 2A for this prototype
+        return "level_2a"
+    if instrument.instrument_type == "mbs":
+        return "level_2a"
     if instrument.maturity_years <= THIRTY_DAYS and "bill" in name:
         return "level_1"
     return None
@@ -249,9 +254,10 @@ def compute_cash_inflows(assets: list[Instrument]) -> tuple[float, pd.DataFrame]
     for inst in assets:
         hqla = _classify_hqla(inst)
 
-        if inst.instrument_type == "amortising" and getattr(inst, "prepay_enabled", False):
-            # Monthly mortgages pay at 1/12Y; LCR window is 30/365 ≈ 0.082Y.
+        if inst.is_prepayable:
+            # Monthly mortgages/MBS pay at 1/12Y; LCR window is 30/365 ≈ 0.082Y.
             # Prorate the first payment period into the 30-day stress window.
+            # (User shock-CPR table is EVE/NII only — LCR uses the base schedule.)
             period = 1.0 / max(int(inst.payment_freq), 1)
             first_period_prin = inst.principal_within_years(period)
             returned = first_period_prin * min(1.0, THIRTY_DAYS / period)
@@ -259,7 +265,7 @@ def compute_cash_inflows(assets: list[Instrument]) -> tuple[float, pd.DataFrame]
                 continue
             rate = INFLOW_PERF_LOAN
             inflow = returned * rate
-            cat = "Mortgage / amortising (CPR 30d principal)"
+            cat = "Mortgage / MBS (30d principal)"
             total += inflow
             rows.append({
                 "Instrument": inst.name,

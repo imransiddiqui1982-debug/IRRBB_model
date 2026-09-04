@@ -198,3 +198,46 @@ def test_scenario_market_rate_moves_with_shock():
     base = scenario_market_mortgage_rate(curve.base_rates, None, 10.0)
     up = scenario_market_mortgage_rate(curve.base_rates, [200] * 19, 10.0)
     assert up > base
+
+
+def test_mbs_instrument_always_prepays():
+    inst = Instrument(
+        "Agency MBS Pass-Through", 300, 4.8, "mbs", 15.0,
+        payment_freq=12, side="asset", age_months=36, base_cpr=0.10,
+    )
+    assert inst.is_prepayable
+    assert any(cf.cf_type == "prepayment" for cf in inst.cashflows)
+
+
+def test_user_cpr_table_drives_eve():
+    """Higher CPR under PS_DOWN shortens duration vs low CPR under PS_UP."""
+    from src.prepayment import ShockCprTable
+
+    curve = YieldCurve(ref_tenors=[0, 30], ref_rates=[0.05, 0.05])
+    mbs = Instrument(
+        "Agency MBS", 500, 5.0, "mbs", 15.0,
+        payment_freq=12, side="asset", age_months=36,
+    )
+    liab = Instrument(
+        "Funding", 500, 1.0, "demand_deposit", 1 / 12,
+        repricing_years=1 / 12, side="liability",
+    )
+    table = ShockCprTable.from_pct_map({
+        "BASE": 6.0,
+        "PS_UP": 2.0,
+        "PS_DOWN": 30.0,
+    })
+    calc = IRRBBCalculator(
+        [mbs], [liab], tier1_capital=500, yield_curve=curve, cpr_table=table,
+    )
+    up = SCENARIO_MAP["PS_UP"]
+    down = SCENARIO_MAP["PS_DOWN"]
+    eve_up, _, _ = calc.calc_eve(up)
+    eve_down, _, _ = calc.calc_eve(down)
+    assert eve_up < 0
+    assert eve_down > 0
+    # Negative convexity amplified by user CPR: |up| > down
+    assert abs(eve_up) > eve_down
+
+    detail = calc.instrument_eve_detail(down)
+    assert "30.0%" in str(detail.iloc[0]["cpr_shocked"])

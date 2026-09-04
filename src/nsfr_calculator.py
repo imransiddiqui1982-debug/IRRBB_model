@@ -69,13 +69,10 @@ def _residual_maturity_years(inst: Instrument) -> float:
     """
     Residual maturity for NSFR ASF/RSF.
 
-    Prepayable amortising assets use principal-weighted average life (WAL)
-    so CPR shortens required stable funding tenor versus contractual maturity.
+    Prepayable amortising / MBS assets use principal-weighted average life (WAL)
+    on the **base** schedule only (shock CPR table does not affect NSFR).
     """
-    if (
-        getattr(inst, "instrument_type", None) == "amortising"
-        and getattr(inst, "prepay_enabled", False)
-    ):
+    if getattr(inst, "is_prepayable", False):
         return max(inst.wal_years(), 1 / 365)
     return max(inst.maturity_years, inst.repricing_years)
 
@@ -156,16 +153,16 @@ def _rsf_factor_asset(instrument: Instrument) -> tuple[float, str]:
     if hqla == "level_2b":
         return RSF_HQLA_LEVEL2B, "Level 2B HQLA"
 
-    if "mortgage" in name:
-        # BCBS: unencumbered residential mortgages ≤35% LTV often 65% RSF;
-        # when WAL < 1Y after CPR, use performing-loan short factor path via maturity.
+    if "mortgage" in name and "mbs" not in name and "backed" not in name:
         mat = _residual_maturity_years(instrument)
         if mat < ONE_YEAR:
             return RSF_PERFORMING_LOAN, "Residential mortgage (WAL <1Y after CPR)"
         return RSF_MORTGAGE, "Residential mortgage"
 
     mat = _residual_maturity_years(instrument)
-    if instrument.instrument_type in ("bullet_fixed", "bullet_floating", "amortising", "demand_deposit"):
+    if instrument.instrument_type in (
+        "bullet_fixed", "bullet_floating", "amortising", "mbs", "demand_deposit",
+    ):
         if mat >= ONE_YEAR:
             return RSF_PERFORMING_LOAN, "Performing loan / bond (≥1Y)"
         return RSF_PERFORMING_LOAN, "Performing loan / bond (<1Y)"

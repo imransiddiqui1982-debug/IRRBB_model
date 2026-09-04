@@ -78,12 +78,20 @@ def get_instruments() -> tuple[list[Instrument], list[Instrument]]:
         # ── Long-term ─────────────────────────────────────────────────────────
         Instrument(
             name="Fixed-Rate Mortgages (10Y, amortising)",
-            notional=800, coupon_pct=5.20,
+            notional=500, coupon_pct=5.20,
             instrument_type="amortising",
             maturity_years=10.0,
             payment_freq=12, side="asset",
             prepay_enabled=True,
             age_months=24,
+        ),
+        Instrument(
+            name="Agency MBS Pass-Through (30Y)",
+            notional=300, coupon_pct=4.80,
+            instrument_type="mbs",
+            maturity_years=15.0,  # WAL proxy for 30Y pool
+            payment_freq=12, side="asset",
+            age_months=36,
         ),
         Instrument(
             name="Fixed Gov Bonds (15Y)",

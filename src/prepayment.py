@@ -18,12 +18,18 @@ S-curve CPR (industry standard ALM form):
 Optional Hugging Face Chronos (amazon/chronos-t5-tiny) can refine the base CPR
 level from recent prepayment history when ``use_hf_chronos=True`` and
 transformers/chronos-forecasting are installed.
+
+User / UI overrides
+-------------------
+Banks often supply scenario CPR or PSA speeds directly (ALCO assumptions).
+``DEFAULT_SHOCK_CPR_PCT`` and ``ShockCprTable`` hold base + six BCBS scenario
+annual CPR fractions used for mortgages and MBS in EVE/NII.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Sequence
+from dataclasses import dataclass, field
+from typing import Mapping, Sequence
 
 import numpy as np
 
@@ -35,6 +41,18 @@ DEFAULT_CPR_FLOOR = 0.02   # 2% CPR when deep out-of-the-money
 DEFAULT_CPR_CEILING = 0.45  # 45% CPR when deeply in-the-money
 DEFAULT_S_MIDPOINT = 0.005  # 50 bp incentive at curve midpoint
 DEFAULT_S_STEEPNESS = 80.0  # dimensionless
+
+# Default ALCO-style CPR (%) by environment — used when the UI supplies overrides.
+# Rates up → slower prepay; rates down → faster prepay (negative convexity).
+DEFAULT_SHOCK_CPR_PCT: dict[str, float] = {
+    "BASE": 6.0,          # ~100% PSA terminal
+    "PS_UP": 3.0,         # extension
+    "PS_DOWN": 25.0,      # refinance wave
+    "STEEPENER": 8.0,
+    "FLATTENER": 5.0,
+    "SHORT_UP": 4.0,
+    "SHORT_DOWN": 18.0,
+}
 
 
 @dataclass(frozen=True)
@@ -150,6 +168,80 @@ def scenario_market_mortgage_rate(
     else:
         shocked = rates
     return mortgage_market_rate_from_curve(shocked, maturity_years, spread=spread)
+
+
+def psa_percent_to_cpr(psa_percent: float, age_months: int = 30) -> float:
+    """Convert a PSA multiple (%) into an annual CPR at the given loan age."""
+    return psa_cpr(age_months, psa_percent=float(psa_percent))
+
+
+def cpr_pct_to_fraction(cpr_pct: float) -> float:
+    """UI percent (e.g. 6.0) → annual CPR fraction (0.06)."""
+    v = float(cpr_pct)
+    if v > 1.0:
+        v = v / 100.0
+    return float(np.clip(v, 0.0, 0.999))
+
+
+@dataclass
+class ShockCprTable:
+    """
+    User-supplied annual CPR by environment for mortgages / MBS.
+
+    Keys: ``BASE`` plus BCBS scenario ids (``PS_UP``, ``PS_DOWN``, …).
+    Values are annual CPR **fractions** (0.06 = 6%).
+    """
+    cpr_by_key: dict[str, float] = field(default_factory=dict)
+
+    @classmethod
+    def from_pct_map(cls, pct_map: Mapping[str, float] | None = None) -> "ShockCprTable":
+        src = dict(DEFAULT_SHOCK_CPR_PCT)
+        if pct_map:
+            src.update({str(k): float(v) for k, v in pct_map.items()})
+        return cls(cpr_by_key={k: cpr_pct_to_fraction(v) for k, v in src.items()})
+
+    @classmethod
+    def from_psa_map(
+        cls,
+        psa_map: Mapping[str, float] | None = None,
+        age_months: int = 30,
+    ) -> "ShockCprTable":
+        """Build from PSA % multiples (100 = 100% PSA → 6% CPR when seasoned)."""
+        src = {
+            "BASE": 100.0,
+            "PS_UP": 50.0,
+            "PS_DOWN": 400.0,
+            "STEEPENER": 125.0,
+            "FLATTENER": 80.0,
+            "SHORT_UP": 60.0,
+            "SHORT_DOWN": 300.0,
+        }
+        if psa_map:
+            src.update({str(k): float(v) for k, v in psa_map.items()})
+        return cls(
+            cpr_by_key={
+                k: psa_percent_to_cpr(v, age_months=age_months) for k, v in src.items()
+            }
+        )
+
+    def base_cpr(self) -> float:
+        return float(self.cpr_by_key.get("BASE", cpr_pct_to_fraction(DEFAULT_SHOCK_CPR_PCT["BASE"])))
+
+    def cpr_for_scenario(self, scenario_id: str) -> float:
+        if scenario_id in self.cpr_by_key:
+            return float(self.cpr_by_key[scenario_id])
+        return self.base_cpr()
+
+    def as_pct_dataframe(self) -> "pd.DataFrame":
+        import pandas as pd
+        rows = []
+        for key, frac in self.cpr_by_key.items():
+            rows.append({
+                "Environment": key,
+                "CPR (%)": round(frac * 100.0, 2),
+                "PSA (% of std)": round(frac / 0.06 * 100.0, 1) if frac > 0 else 0.0,
+            })
+        return pd.DataFrame(rows)
 
 
 def enhance_cpr_with_hf_chronos(

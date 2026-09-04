@@ -30,6 +30,8 @@ Instrument types supported
     amortising      : fixed-rate amortising loan (equal principal)
                       principal paid evenly each period + declining coupons;
                       optional CPR prepayment accelerates principal
+    mbs             : mortgage-backed security (pass-through) — amortising
+                      schedule with CPR always enabled (user or S-curve)
     demand_deposit  : non-maturity deposit (NMD) — modelled as single
                       cash flow at behavioural repricing tenor
 """
@@ -51,8 +53,11 @@ InstrumentType = Literal[
     "bullet_fixed",
     "bullet_floating",
     "amortising",
+    "mbs",
     "demand_deposit",
 ]
+
+PREPAYABLE_TYPES = frozenset({"amortising", "mbs"})
 
 
 @dataclass
@@ -112,16 +117,19 @@ class Instrument:
     def __post_init__(self):
         if self.repricing_years is None:
             self.repricing_years = self.maturity_years
-        # Auto-enable CPR for mortgage-named amortising assets when not set
-        if (
+        name_l = self.name.lower()
+        # MBS always prepays; mortgages auto-enable CPR by name
+        if self.instrument_type == "mbs":
+            self.prepay_enabled = True
+        elif (
             self.instrument_type == "amortising"
             and not self.prepay_enabled
-            and "mortgage" in self.name.lower()
+            and ("mortgage" in name_l or "mbs" in name_l or "mortgage-backed" in name_l)
         ):
             self.prepay_enabled = True
         if (
             self.prepay_enabled
-            and self.instrument_type == "amortising"
+            and self.instrument_type in PREPAYABLE_TYPES
             and self.market_mortgage_rate is None
         ):
             from .prepayment import scenario_market_mortgage_rate
@@ -131,6 +139,11 @@ class Instrument:
             )
         self.cashflows = self.generate_cashflows()
 
+    @property
+    def is_prepayable(self) -> bool:
+        """True for MBS and amortising mortgages with CPR enabled."""
+        return self.instrument_type in PREPAYABLE_TYPES and bool(self.prepay_enabled)
+
     # ── Cash flow generators ──────────────────────────────────────────────────
 
     def generate_cashflows(self) -> list[CashFlow]:
@@ -138,7 +151,7 @@ class Instrument:
             return self._bullet_fixed()
         elif self.instrument_type == "bullet_floating":
             return self._bullet_floating()
-        elif self.instrument_type == "amortising":
+        elif self.instrument_type in ("amortising", "mbs"):
             return self._amortising()
         elif self.instrument_type == "demand_deposit":
             return self._demand_deposit()
@@ -291,7 +304,7 @@ class Instrument:
         cpr_override: float | None = None,
     ) -> list[CashFlow]:
         """Regenerate cash flows under a shocked primary mortgage rate (EVE)."""
-        if self.instrument_type != "amortising" or not self.prepay_enabled:
+        if not self.is_prepayable:
             return list(self.cashflows)
         return self._amortising_with_cpr(
             market_mortgage_rate=market_mortgage_rate,

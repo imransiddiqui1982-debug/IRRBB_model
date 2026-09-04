@@ -43,7 +43,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from .cashflows import Instrument
-from .prepayment import scenario_market_mortgage_rate
+from .prepayment import ShockCprTable, scenario_market_mortgage_rate
 from .scenarios import Scenario
 from .yield_curve import YieldCurve, BASE_CURVE
 from .time_buckets import BCBS_BUCKETS, BUCKET_MIDPOINTS, N_BUCKETS
@@ -84,6 +84,7 @@ class IRRBBCalculator:
     yield_curve    : YieldCurve instance (defaults to module-level BASE_CURVE)
     outlier_threshold : 0.15 (15%) per BCBS 368 §99
     watch_threshold   : 0.10 (10%) internal warning
+    cpr_table      : optional user CPR by BASE + scenario id (mortgages / MBS)
     """
 
     def __init__(
@@ -94,6 +95,7 @@ class IRRBBCalculator:
         yield_curve:       YieldCurve = None,
         outlier_threshold: float = 0.15,
         watch_threshold:   float = 0.10,
+        cpr_table:         ShockCprTable | None = None,
     ):
         self.assets = assets
         self.liabilities = liabilities
@@ -101,8 +103,9 @@ class IRRBBCalculator:
         self.curve = yield_curve or BASE_CURVE
         self.outlier_thr = outlier_threshold
         self.watch_thr = watch_threshold
+        self.cpr_table = cpr_table
 
-        # Base (no-shock) bucketed CFs — mortgages use base-curve CPR
+        # Base (no-shock) bucketed CFs — mortgages/MBS use base CPR
         self._asset_cfs = np.array([
             self._instrument_base_cfs(i) for i in assets
         ])
@@ -110,13 +113,21 @@ class IRRBBCalculator:
             self._instrument_base_cfs(i) for i in liabilities
         ])
 
+    def _cpr_override_for(self, scenario_id: str | None) -> float | None:
+        if self.cpr_table is None:
+            return None
+        if scenario_id is None or scenario_id == "BASE":
+            return self.cpr_table.base_cpr()
+        return self.cpr_table.cpr_for_scenario(scenario_id)
+
     def _instrument_base_cfs(self, inst: Instrument) -> np.ndarray:
-        """Bucket CFs under the base yield curve (incentive CPR for mortgages)."""
-        if inst.instrument_type == "amortising" and inst.prepay_enabled:
+        """Bucket CFs under the base yield curve (incentive or user CPR)."""
+        if inst.is_prepayable:
+            cpr = self._cpr_override_for("BASE")
             mkt = scenario_market_mortgage_rate(
                 self.curve.base_rates, None, inst.maturity_years,
             )
-            return inst.bucket_cashflows_under_market_rate(mkt)
+            return inst.bucket_cashflows_under_market_rate(mkt, cpr_override=cpr)
         return inst.bucket_cashflows()
 
     def _instrument_shocked_cfs(
@@ -125,13 +136,14 @@ class IRRBBCalculator:
         scenario: Scenario,
     ) -> np.ndarray:
         """Bucket CFs under scenario discount + CPR (negative convexity)."""
-        if inst.instrument_type == "amortising" and inst.prepay_enabled:
+        if inst.is_prepayable:
+            cpr = self._cpr_override_for(scenario.id)
             mkt = scenario_market_mortgage_rate(
                 self.curve.base_rates,
                 scenario.shocks_bp,
                 inst.maturity_years,
             )
-            return inst.bucket_cashflows_under_market_rate(mkt)
+            return inst.bucket_cashflows_under_market_rate(mkt, cpr_override=cpr)
         return inst.bucket_cashflows()
 
     # ── EVE ───────────────────────────────────────────────────────────────────
@@ -190,21 +202,23 @@ class IRRBBCalculator:
                 bucket = inst.cashflows[0].bucket   # single repricing CF
                 shock_dec = scenario.shock_at_bucket(bucket) / 10_000
                 total += sign * inst.notional * shock_dec
-            elif (
-                inst.instrument_type == "amortising"
-                and inst.prepay_enabled
-                and inst.side == "asset"
-            ):
+            elif inst.is_prepayable and inst.side == "asset":
                 # Lost coupon on balances prepaid within 1Y under the shock,
                 # partially offset by reinvestment at the shocked short rate.
+                cpr_base = self._cpr_override_for("BASE")
+                cpr_shock = self._cpr_override_for(scenario.id)
                 mkt_base = scenario_market_mortgage_rate(
                     self.curve.base_rates, None, inst.maturity_years,
                 )
                 mkt_shock = scenario_market_mortgage_rate(
                     self.curve.base_rates, scenario.shocks_bp, inst.maturity_years,
                 )
-                base_cfs = inst.cashflows_under_market_rate(mkt_base)
-                shock_cfs = inst.cashflows_under_market_rate(mkt_shock)
+                base_cfs = inst.cashflows_under_market_rate(
+                    mkt_base, cpr_override=cpr_base,
+                )
+                shock_cfs = inst.cashflows_under_market_rate(
+                    mkt_shock, cpr_override=cpr_shock,
+                )
 
                 def _prep_1y(cfs):
                     return sum(
@@ -214,9 +228,6 @@ class IRRBBCalculator:
 
                 prep_base = _prep_1y(base_cfs)
                 prep_shock = _prep_1y(shock_cfs)
-                # Extra prepayment under the shock loses contractual coupon vs
-                # earning the shocked short rate for the remainder of the year
-                # (simplified half-year convention).
                 extra_prep = prep_shock - prep_base
                 coupon_dec = inst.coupon_pct / 100.0
                 reinvest = float(self.curve.base_rates[0]) + short_shock
@@ -367,11 +378,14 @@ class IRRBBCalculator:
             for inst, pv_b, pv_s in zip(instruments, pv_base, pv_shocked):
                 delta_pv = sign * (pv_s - pv_b)
                 cpr_note = ""
-                if inst.instrument_type == "amortising" and inst.prepay_enabled:
-                    mkt = scenario_market_mortgage_rate(
-                        self.curve.base_rates, scenario.shocks_bp, inst.maturity_years,
-                    )
-                    cpr_note = f"{inst.resolve_cpr(mkt) * 100:.1f}%"
+                if inst.is_prepayable:
+                    cpr = self._cpr_override_for(scenario.id)
+                    if cpr is None:
+                        mkt = scenario_market_mortgage_rate(
+                            self.curve.base_rates, scenario.shocks_bp, inst.maturity_years,
+                        )
+                        cpr = inst.resolve_cpr(mkt)
+                    cpr_note = f"{cpr * 100:.1f}%"
                 rows.append({
                     "side":          inst.side.upper(),
                     "instrument":    inst.name,

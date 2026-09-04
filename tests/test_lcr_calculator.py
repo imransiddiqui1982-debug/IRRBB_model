@@ -27,7 +27,8 @@ def test_hqla_from_sample_balance_sheet(instruments):
     assets, _ = instruments
     l1, l2a, l2b, df = compute_hqla_stock(assets)
     assert l1 > 0
-    assert l2a == 0.0
+    # Agency MBS is classified Level 2A in the sample book
+    assert l2a > 0
     assert l2b == 0.0
     assert not df.empty
     assert "Cash" in df["Instrument"].iloc[0] or any("Cash" in n for n in df["Instrument"])

@@ -87,7 +87,7 @@ One row per instrument:
 | `side` | Yes | `asset` or `liability` |
 | `notional` | Yes | USD millions |
 | `coupon_pct` | Yes | Annual coupon % |
-| `instrument_type` | Yes | `bullet_fixed` \| `bullet_floating` \| `amortising` \| `demand_deposit` |
+| `instrument_type` | Yes | `bullet_fixed` \| `bullet_floating` \| `amortising` \| `mbs` \| `demand_deposit` |
 | `maturity_years` | Yes | Contractual maturity (years) |
 | `payment_freq` | No | Payments per year (default 2) |
 | `repricing_years` | No | Next reset for floaters |
@@ -96,7 +96,7 @@ One row per instrument:
 | `age_months` | No | Loan age for PSA seasoning (default 0) |
 | `market_mortgage_rate` | No | Primary mortgage rate (decimal or %); blank → curve + 150bp spread |
 
-**Mortgage CPR:** Amortising mortgages apply PSA seasoning × refinance S-curve. Under each BCBS shock the primary rate moves with the curve, so CPR rises when rates fall (negative convexity) and falls when rates rise (extension risk). That schedule feeds **EVE**, **NII** (1Y prepaid reinvestment), **LCR** (30-day principal inflows), and **NSFR** (WAL-based residual maturity / RSF). Optional Hugging Face Chronos blend: `pip install -r requirements-hf.txt` then set `use_hf_chronos=True` with `historical_cpr`.
+**Mortgage / MBS CPR:** Amortising mortgages and `mbs` pass-throughs use PSA × S-curve by default. In Streamlit, enable **Use custom CPR by rate-shock scenario** to enter CPR % or PSA % for Base + each BCBS shock — those speeds drive **EVE and NII only** (LCR/NSFR unchanged). Optional Hugging Face Chronos blend: `pip install -r requirements-hf.txt`.
 
 **Tip:** When NMD is enabled, leave demand deposits out of the CSV (or they are replaced). Use the CSV for assets + wholesale funding only.
 

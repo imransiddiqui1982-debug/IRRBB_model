@@ -2,6 +2,7 @@ from .time_buckets import BCBS_BUCKETS, BUCKET_LABELS, N_BUCKETS, years_to_bucke
 from .cashflows import Instrument, CashFlow
 from .prepayment import (
     PrepaymentParams,
+    ShockCprTable,
     cpr_to_smm,
     effective_cpr,
     incentive_cpr,
@@ -32,7 +33,7 @@ except ImportError:  # pragma: no cover — optional viz deps (matplotlib)
 __all__ = [
     'BCBS_BUCKETS', 'BUCKET_LABELS', 'N_BUCKETS', 'years_to_bucket',
     'Instrument', 'CashFlow',
-    'PrepaymentParams', 'cpr_to_smm', 'effective_cpr', 'incentive_cpr', 's_curve_cpr',
+    'PrepaymentParams', 'ShockCprTable', 'cpr_to_smm', 'effective_cpr', 'incentive_cpr', 's_curve_cpr',
     'YieldCurve', 'BASE_CURVE',
     'get_instruments',
     'load_instruments_from_csv', 'instruments_to_dataframe',
