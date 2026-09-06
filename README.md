@@ -12,6 +12,7 @@ End-to-end **Interest Rate Risk in the Banking Book (IRRBB)** engine with:
 - **LCR / NSFR** from U.S. disclosure-style workbook inputs  
 - **Live SOFR + USD IRS mid** yield curve (optional)  
 - **DV01 gap** and indicative IRS hedge suggestions  
+- **Key rate duration (KR01)** on the tradeable 1/2/3/5/7/10Y swap grid  
 
 ---
 
@@ -37,7 +38,7 @@ Open the Streamlit URL (default `http://localhost:8501`). In the sidebar:
 1. Enable **Load calibrated balance sheet sample**  
 2. Enable **Refine NMD deposits** + **Load calibrated deposit model sample**  
 3. Enable **Use live SOFR + USD IRS mid curve** (optional)  
-4. Review tabs: **NMD Refinement**, **LCR / NSFR**, **All Scenarios**, **Repricing Gap**, **Yield Curve**
+4. Review tabs: **NMD Refinement**, **LCR / NSFR**, **All Scenarios**, **Repricing Gap**, **ALCO / KR01 / Hedges**, **Yield Curve**
 
 ---
 
@@ -70,6 +71,7 @@ GitHub stores the code; **Streamlit Community Cloud** runs the dashboard and giv
 | **LCR** | HQLA / net 30-day outflows | Basel LCR / 12 CFR 249.91 style |
 | **NSFR** | ASF / RSF | Basel NSFR / 12 CFR 249.131 style |
 | **DV01 gap** | Bucket asset vs liability DV01 + IRS hedges | Risk management |
+| **Key rate duration** | KR01 on 1/2/3/5/7/10Y swap grid + hedge tags | Treasury / hedging |
 
 ---
 
@@ -192,6 +194,21 @@ print(liq.summary)
 
 Open **Repricing Gap**: asset DV01 (above zero), liability DV01 (below), net DV01 line, plus payer/receiver swap suggestions by bucket.
 
+### D2. Key rate duration (treasury / ALCO)
+
+Open **ALCO / KR01 / Hedges** for three layers:
+
+1. **Board / ALCO** — EVE vs 15%/10% Tier 1 with key-rate **drivers**, hedge package grid  
+2. **Treasury** — base KR01, shock vector, attribution `ΔEVE ≈ −KR01 × shock_bp`, **dynamic KR01 under all 6 shocks**  
+3. **Hedge playbook** — EVE relief per $100m 2Y/5Y/10Y pay-fixed, IRS tickets, why that tenor
+
+```python
+from src.calculator import IRRBBCalculator
+
+calc = IRRBBCalculator(assets, liabilities, tier1_capital=500, yield_curve=curve)
+pack = calc.treasury_alco_pack()   # limits, attribution, scenario_kr01, hedges
+```
+
 ### E. Live yield curve
 
 ```python
@@ -227,6 +244,7 @@ IRRBB_model/
 │   ├── yield_curve.py     # Discounting
 │   ├── market_curve.py    # Live SOFR + IRS mid curve
 │   ├── calculator.py      # EVE, NII, DV01, IRS suggestions
+│   ├── key_rate_duration.py  # KR01 tent grid + hedge tags
 │   ├── nmd_refinement.py  # Behavioural NMD engine
 │   ├── lcr_calculator.py / nsfr_calculator.py / liquidity_*.py
 │   ├── load_balance_sheet.py / balance_sheet.py / file_io.py / plots.py

@@ -27,6 +27,10 @@ from src.prepayment import (  # noqa: E402
     ShockCprTable,
 )
 from src.calculator import IRRBBCalculator, suggest_irs_hedges  # noqa: E402
+from src.key_rate_duration import (  # noqa: E402
+    designate_key_rate_hedges,
+    instrument_kr01_attribution,
+)
 from src.liquidity_ratios import compute_liquidity_ratios_with_workbook  # noqa: E402
 from src.market_curve import get_live_yield_curve  # noqa: E402
 from src.scenarios import SCENARIOS  # noqa: E402
@@ -654,7 +658,7 @@ st.divider()
 #  TABS
 # ══════════════════════════════════════════════════════════════════════════════
 
-tab0, tab_lcr, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab0, tab_lcr, tab1, tab2, tab3, tab4, tab5, tab_kr, tab6 = st.tabs([
     "NMD Refinement",
     "LCR / NSFR",
     "All Scenarios",
@@ -662,6 +666,7 @@ tab0, tab_lcr, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "EVE Waterfall",
     "Scenario Comparison",
     "Repricing Gap",
+    "ALCO / KR01 / Hedges",
     "Yield Curve",
 ])
 
@@ -1419,6 +1424,287 @@ only as a BCBS slotting diagnostic.
         file_name="repricing_gap_dv01.csv", mime="text/csv",
         use_container_width=True,
     )
+
+
+# ── TAB: ALCO / Board / Treasury (KR01 ↔ EVE bridge) ─────────────────────────
+with tab_kr:
+    st.markdown(
+        "<p class='section-label'>Risk Layers — Board · ALCO · Treasury</p>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Layer 1 Repricing Gap (structure) · Layer 2 EVE/NII vs limits · "
+        "Layer 3 KR01 for trade execution. Bridge: "
+        "ΔEVE from key i ≈ −KR01ᵢ × shockᵢ(bp) / 1000 ($M)."
+    )
+
+    kr_hedge_ratio = st.slider(
+        "Target KR01 hedge ratio (%)",
+        min_value=50, max_value=100, value=80, step=5,
+        key="kr_hedge_ratio",
+        help="Used for full multi-tenor hedge package B and spot IRS suggestions.",
+    ) / 100.0
+
+    with st.spinner("Building KR01 attribution & scenario hedges…"):
+        pack = calc.treasury_alco_pack(results=results, hedge_ratio=kr_hedge_ratio)
+
+    kr01_df = pack["kr01"]
+    parallel_k = float(pack["parallel_dv01_k"])
+    sum_kr = float(kr01_df["net_kr01_k"].sum())
+    layer = st.radio(
+        "Dashboard layer",
+        ["Board / ALCO limits", "Treasury KR01 & attribution", "Hedge playbook"],
+        horizontal=True,
+        key="kr_layer",
+    )
+
+    # ── Board / ALCO ──────────────────────────────────────────────────────────
+    if layer == "Board / ALCO limits":
+        st.markdown(
+            "<p class='section-label'>Board / ALCO — EVE limit dashboard</p>",
+            unsafe_allow_html=True,
+        )
+        lim = pack["limits"]
+        n_breach = int((lim["Status"] == "BREACH").sum())
+        n_amber = int((lim["Status"] == "AMBER").sum())
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("Tier 1", f"${tier1:,.0f}M")
+        b2.metric("Breach (≥15%)", str(n_breach), delta_color="inverse")
+        b3.metric("Amber (≥10%)", str(n_amber))
+        b4.metric("Net KR01 (base)", f"${sum_kr:+,.0f}K/bp")
+
+        def _lim_style(row):
+            if row["Status"] == "BREACH":
+                return ["background-color:#fde8e8"] * len(row)
+            if row["Status"] == "AMBER":
+                return ["background-color:#fff4e5"] * len(row)
+            return [""] * len(row)
+
+        st.dataframe(
+            lim.style.apply(_lim_style, axis=1).format({
+                "ΔEVE ($M)": "{:+.2f}",
+                "% Tier 1": "{:+.1f}",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.markdown("**Why this matters for ALCO**")
+        for note in pack["rationale"]:
+            st.markdown(f"- {note}")
+
+        st.markdown("**Hedge package comparison (% of Tier 1)** — linear KR01 bridge + convexity")
+        st.dataframe(
+            pack["packages_pct"].style.format("{:+.1f}%"),
+            use_container_width=True,
+        )
+        st.dataframe(pack["packages_detail"], use_container_width=True, hide_index=True)
+        st.caption(
+            "Package A sizes a single pay-fixed at the Parallel-Up loss driver. "
+            "B ladders all keys. C is a partial A. Hedged rows ≈ predicted+convexity."
+        )
+
+        fig_lim = go.Figure()
+        colors_l = [
+            RED if s == "BREACH" else AMBER if s == "AMBER" else GREEN
+            for s in lim["Status"]
+        ]
+        fig_lim.add_trace(go.Bar(
+            x=lim["Scenario"], y=lim["% Tier 1"],
+            marker_color=colors_l, name="% Tier 1",
+            hovertemplate="%{x}<br>%{y:+.1f}% Tier 1<extra></extra>",
+        ))
+        fig_lim.add_hline(y=-15, line_dash="dash", line_color=RED,
+                          annotation_text="15% breach", annotation_font=dict(color=RED, size=9))
+        fig_lim.add_hline(y=-10, line_dash="dot", line_color=AMBER,
+                          annotation_text="10% amber", annotation_font=dict(color=AMBER, size=9))
+        fig_lim.update_layout(
+            **PLOTLY_BASE, height=360, showlegend=False,
+            yaxis=dict(**AXIS_STYLE, title="ΔEVE / Tier 1 (%)"),
+            xaxis=dict(**AXIS_STYLE, tickangle=-25),
+        )
+        st.plotly_chart(fig_lim, use_container_width=True)
+
+    # ── Treasury KR01 ─────────────────────────────────────────────────────────
+    elif layer == "Treasury KR01 & attribution":
+        st.markdown(
+            "<p class='section-label'>Treasury — monthly KR01 & EVE attribution</p>",
+            unsafe_allow_html=True,
+        )
+        m_k1, m_k2, m_k3, m_k4 = st.columns(4)
+        m_k1.metric("Asset KR01 (sum)", f"${kr01_df['asset_kr01_k'].sum():,.0f}K/bp")
+        m_k2.metric("Liability KR01 (sum)", f"${kr01_df['liability_kr01_k'].sum():,.0f}K/bp")
+        m_k3.metric("Net KR01 (sum)", f"${sum_kr:+,.0f}K/bp")
+        m_k4.metric(
+            "Parallel DV01",
+            f"${parallel_k:+,.0f}K/bp",
+            delta=f"Δ vs ΣKR01 {sum_kr - parallel_k:+,.1f}K",
+            delta_color="off",
+        )
+
+        x_kr = list(kr01_df["label"])
+        fig_kr = go.Figure()
+        fig_kr.add_trace(go.Bar(
+            x=x_kr, y=kr01_df["asset_kr01_k"], name="Asset KR01",
+            marker_color=BLUE, opacity=0.85,
+            hovertemplate="Key: %{x}<br>Asset: %{y:,.1f} $K/bp<extra></extra>",
+        ))
+        fig_kr.add_trace(go.Bar(
+            x=x_kr, y=-kr01_df["liability_kr01_k"], name="Liability KR01",
+            marker_color=ORANGE, opacity=0.85,
+            hovertemplate="Key: %{x}<br>Liability: %{y:,.1f} $K/bp<extra></extra>",
+        ))
+        fig_kr.add_trace(go.Scatter(
+            x=x_kr, y=kr01_df["net_kr01_k"], name="Net KR01",
+            mode="lines+markers",
+            line=dict(color=NAVY, width=2.5),
+            marker=dict(size=8, color=NAVY),
+            hovertemplate="Key: %{x}<br>Net: %{y:+,.1f} $K/bp<extra></extra>",
+        ))
+        fig_kr.add_hline(y=0, line_color=BORDER, line_width=1)
+        fig_kr.update_layout(
+            **PLOTLY_BASE, height=420, barmode="relative",
+            xaxis=dict(**AXIS_STYLE, title="Tradeable key"),
+            yaxis=dict(**AXIS_STYLE, title="KR01 ($K/bp)", tickformat=",.0f"),
+            legend=dict(
+                font=dict(size=10), bgcolor=BG2, bordercolor=BORDER, borderwidth=1,
+                orientation="h", yanchor="bottom", y=1.02,
+            ),
+        )
+        st.plotly_chart(fig_kr, use_container_width=True)
+
+        st.markdown("**Step 1 — Base KR01 report ($K/bp)**")
+        st.dataframe(
+            kr01_df.set_index("label")[
+                ["asset_kr01_k", "liability_kr01_k", "net_kr01_k"]
+            ].rename(columns={
+                "asset_kr01_k": "Asset",
+                "liability_kr01_k": "Liability",
+                "net_kr01_k": "Net KR01",
+            }).style.format({
+                "Asset": "{:,.1f}", "Liability": "{:,.1f}", "Net KR01": "{:+,.1f}",
+            }),
+            use_container_width=True,
+        )
+
+        st.markdown("**Step 2 — Shock at each key (bp)**")
+        st.dataframe(
+            pack["shock_bp"].style.format("{:+.0f}"),
+            use_container_width=True,
+        )
+
+        st.markdown(
+            "**Step 3 — Attribution matrix ($M)**  ·  "
+            "cell = −KR01 × shock_bp / 1000"
+        )
+        st.dataframe(
+            pack["attribution"].style.format("{:+.2f}"),
+            use_container_width=True,
+        )
+        st.caption(
+            "Predicted = sum of key contributions. Actual = full EVE revaluation. "
+            "Convexity = Actual − Predicted (MBS/mortgage optionality when large)."
+        )
+
+        st.markdown("**Dynamic KR01 under each BCBS shock ($K/bp net)**")
+        st.caption(
+            "Recomputed on the shocked curve (CPR live) — duration drift for rebalancing."
+        )
+        st.dataframe(
+            pack["scenario_kr01"].style.format("{:+,.1f}"),
+            use_container_width=True,
+        )
+        fig_sk = go.Figure()
+        sk = pack["scenario_kr01"]
+        for col in sk.columns:
+            fig_sk.add_trace(go.Scatter(
+                x=list(sk.index), y=sk[col], mode="lines+markers", name=col,
+                line=dict(width=2 if col == "Base" else 1.5,
+                          dash="solid" if col == "Base" else "dot"),
+            ))
+        fig_sk.add_hline(y=0, line_color=BORDER, line_width=1)
+        fig_sk.update_layout(
+            **PLOTLY_BASE, height=400,
+            xaxis=dict(**AXIS_STYLE, title="Key"),
+            yaxis=dict(**AXIS_STYLE, title="Net KR01 ($K/bp)"),
+            legend=dict(
+                font=dict(size=9), bgcolor=BG2, orientation="h",
+                yanchor="bottom", y=1.02,
+            ),
+        )
+        st.plotly_chart(fig_sk, use_container_width=True)
+
+        with st.expander("▼ Instrument KR01 attribution"):
+            attr = instrument_kr01_attribution(
+                list(assets) + list(liabilities),
+                curve,
+                cpr_override=calc._cpr_override_for("BASE"),
+            )
+            st.dataframe(attr, use_container_width=True, height=360)
+
+    # ── Hedge playbook ────────────────────────────────────────────────────────
+    else:
+        st.markdown(
+            "<p class='section-label'>Treasury — IRS hedge playbook</p>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "**EVE relief per $100m pay-fixed** (from KR01 × scenario shock)"
+        )
+        st.dataframe(
+            pack["efficiency"].style.format(
+                {**{c: "{:+.2f}" for c in pack["efficiency"].columns
+                    if c not in ("Instrument", "KR01 ($K/bp)")},
+                 "KR01 ($K/bp)": "{:,.1f}"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.markdown("**Why these IRS?**")
+        for note in pack["rationale"]:
+            st.markdown(f"- {note}")
+
+        st.markdown("**Spot KR01 hedge tickets (existing book)**")
+        kr_hedge_df = pack["hedges"]
+        if kr_hedge_df.empty:
+            st.info("No material key-rate gaps on the swap grid.")
+        else:
+            st.dataframe(kr_hedge_df, use_container_width=True, hide_index=True)
+            desig = designate_key_rate_hedges(kr_hedge_df, assets, liabilities)
+            if not desig.empty:
+                st.markdown("**Indicative hedge-accounting tags** *(not advice)*")
+                st.dataframe(desig, use_container_width=True, hide_index=True)
+
+        st.markdown("**Package grid (% Tier 1)**")
+        st.dataframe(
+            pack["packages_pct"].style.format("{:+.1f}%"),
+            use_container_width=True,
+        )
+        st.dataframe(pack["packages_detail"], use_container_width=True, hide_index=True)
+
+        st.download_button(
+            "⬇ Download KR01 gap CSV",
+            kr01_df.to_csv(index=False),
+            file_name="key_rate_duration_gap.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        st.download_button(
+            "⬇ Download attribution matrix CSV",
+            pack["attribution"].to_csv(),
+            file_name="kr01_eve_attribution.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        if not kr_hedge_df.empty:
+            st.download_button(
+                "⬇ Download hedge suggestions CSV",
+                kr_hedge_df.to_csv(index=False),
+                file_name="key_rate_hedge_suggestions.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
 
 # ── TAB 6: Yield Curve ────────────────────────────────────────────────────────

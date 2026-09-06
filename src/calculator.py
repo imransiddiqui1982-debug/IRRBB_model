@@ -347,6 +347,61 @@ class IRRBBCalculator:
     ) -> pd.DataFrame:
         return suggest_irs_hedges(dv01_gap, hedge_ratio, min_net_dv01_k)
 
+    def key_rate_duration_gap(self) -> pd.DataFrame:
+        """
+        Tradeable-grid KR01 ($K/bp) for assets, liabilities, and net EVE.
+
+        Prepayable mortgages / MBS regenerate cash flows under each tent bump
+        so behavioural optionality is live inside the sensitivity.
+        """
+        from .key_rate_duration import compute_kr01
+
+        return compute_kr01(
+            self.assets,
+            self.liabilities,
+            self.curve,
+            cpr_override=self._cpr_override_for("BASE"),
+        )
+
+    def parallel_eve_dv01_k(self) -> float:
+        """Parallel +1bp net EVE DV01 in $ thousands (KR01 reconciliation check)."""
+        from .key_rate_duration import parallel_dv01
+
+        return parallel_dv01(
+            self.assets,
+            self.liabilities,
+            self.curve,
+            cpr_override=self._cpr_override_for("BASE"),
+        )
+
+    def treasury_alco_pack(
+        self,
+        results: list | None = None,
+        hedge_ratio: float = 0.80,
+    ) -> dict:
+        """
+        Board / ALCO / Treasury pack: base KR01, scenario KR01, EVE attribution,
+        limit dashboard, hedge efficiency and packages.
+        """
+        from .key_rate_duration import build_treasury_alco_pack
+        from .scenarios import SCENARIOS
+
+        if results is None:
+            results = self.run_all(SCENARIOS)
+        actual = {r.scenario.id: r.delta_eve for r in results}
+        return build_treasury_alco_pack(
+            self.assets,
+            self.liabilities,
+            self.curve,
+            SCENARIOS,
+            tier1_m=self.tier1,
+            actual_delta_eve=actual,
+            cpr_for_scenario=self._cpr_override_for,
+            hedge_ratio=hedge_ratio,
+            breach_pct=self.outlier_thr * 100.0,
+            amber_pct=self.watch_thr * 100.0,
+        )
+
     def repricing_gap(self) -> pd.DataFrame:
         """Notional repricing gap per BCBS 368 bucket (all 19)."""
         rows = []
