@@ -383,12 +383,101 @@ with st.sidebar:
 
     st.markdown("<p class='section-label'>Mortgage / MBS CPR</p>",
                 unsafe_allow_html=True)
+
+    # Persist CPR/PSA stores before calibration UI writes into them.
+    if "shock_cpr_store" not in st.session_state:
+        st.session_state["shock_cpr_store"] = dict(DEFAULT_SHOCK_CPR_PCT)
+    if "shock_psa_store" not in st.session_state:
+        st.session_state["shock_psa_store"] = dict(DEFAULT_SHOCK_PSA_PCT)
+    if "cpr_calib_version" not in st.session_state:
+        st.session_state["cpr_calib_version"] = 0
+
+    with st.expander("CPR calibration (PMMS + WAC → scenario CPR)", expanded=False):
+        st.caption(
+            "Option B: map portfolio WAC and current PMMS through an agency-style "
+            "refinance S-curve, apply each BCBS shock at the ~7Y mortgage tenor, "
+            "and auto-fill BASE + six scenario CPR/PSA. Anchored to illustrative "
+            "GSE S-curve shape + US regimes (2020 boom / 2022–24 lock-in)."
+        )
+        cal_wac = st.number_input(
+            "Portfolio WAC (%)",
+            min_value=0.0, max_value=20.0, value=5.50, step=0.05,
+            key="cpr_cal_wac",
+            help="Weighted-average coupon on mortgages / MBS.",
+        )
+        cal_pmms = st.number_input(
+            "Current PMMS / offering rate (%)",
+            min_value=0.0, max_value=20.0, value=6.50, step=0.05,
+            key="cpr_cal_pmms",
+            help="Freddie Mac PMMS 30Y (or your current offering rate).",
+        )
+        cal_age = st.number_input(
+            "Seasoning for PSA conversion (months)",
+            min_value=0, max_value=360, value=30, step=1,
+            key="cpr_cal_age",
+        )
+        from src.cpr_calibration import (
+            CprCalibrationInputs,
+            calibrate_scenario_cprs,
+            calibration_to_cpr_maps,
+            scurve_dataframe,
+            historical_regimes_dataframe,
+        )
+        _calib_preview = calibrate_scenario_cprs(
+            CprCalibrationInputs(
+                wac_pct=float(cal_wac),
+                pmms_pct=float(cal_pmms),
+                age_months=int(cal_age),
+            )
+        )
+        st.dataframe(
+            _calib_preview[[
+                "scenario", "mortgage_shock_bp", "implied_pmms_pct",
+                "incentive_bp", "cpr_pct", "psa_pct", "historical_analogue",
+            ]],
+            use_container_width=True,
+            hide_index=True,
+        )
+        with st.expander("S-curve knots (incentive bp → CPR %)"):
+            st.dataframe(scurve_dataframe(), use_container_width=True, hide_index=True)
+            st.caption(
+                "Replace these knots with Fannie/Freddie Cohort Analyzer or "
+                "Clarity S-curve extracts for exam-ready calibration."
+            )
+        with st.expander("Historical regimes (relevance)"):
+            st.dataframe(
+                historical_regimes_dataframe(),
+                use_container_width=True,
+                hide_index=True,
+            )
+        apply_calib = st.button(
+            "Apply calibrated CPR / PSA to all scenarios",
+            type="primary",
+            use_container_width=True,
+            key="apply_cpr_calib",
+        )
+        if apply_calib:
+            cpr_map, psa_map = calibration_to_cpr_maps(_calib_preview)
+            st.session_state["shock_cpr_store"] = cpr_map
+            st.session_state["shock_psa_store"] = psa_map
+            st.session_state["cpr_calib_df"] = _calib_preview
+            st.session_state["cpr_calib_version"] = (
+                int(st.session_state.get("cpr_calib_version", 0)) + 1
+            )
+            st.session_state["use_custom_cpr_cb"] = True
+            st.success(
+                "Calibrated CPR/PSA applied to BASE + all six BCBS scenarios."
+            )
+            st.rerun()
+
     use_custom_cpr = st.checkbox(
         "Use custom CPR / PSA for active scenario",
         value=True,
+        key="use_custom_cpr_cb",
         help=(
             "Shows one CPR % and one PSA % for the Active Scenario only. "
             "Values for other scenarios are kept and used in All Scenarios EVE/NII. "
+            "Use CPR calibration above to fill all scenarios from PMMS + WAC. "
             "LCR/NSFR ignore these inputs."
         ),
     )
@@ -400,14 +489,9 @@ with st.sidebar:
         help="CPR % = annual constant prepayment. PSA % = multiple of PSA standard (100 ≈ 6% CPR when seasoned).",
     )
 
-    # Persist CPR/PSA for every environment; only edit the active scenario in the UI.
-    if "shock_cpr_store" not in st.session_state:
-        st.session_state["shock_cpr_store"] = dict(DEFAULT_SHOCK_CPR_PCT)
-    if "shock_psa_store" not in st.session_state:
-        st.session_state["shock_psa_store"] = dict(DEFAULT_SHOCK_PSA_PCT)
-
     shock_cpr_inputs: dict[str, float] = dict(st.session_state["shock_cpr_store"])
     shock_psa_inputs: dict[str, float] = dict(st.session_state["shock_psa_store"])
+    _cv = int(st.session_state["cpr_calib_version"])
 
     if use_custom_cpr:
         active_key = selected_scenario.id
@@ -420,7 +504,7 @@ with st.sidebar:
                 max_value=100.0,
                 value=float(shock_cpr_inputs.get(active_key, DEFAULT_SHOCK_CPR_PCT.get(active_key, 6.0))),
                 step=0.5,
-                key=f"cpr_active_{active_key}",
+                key=f"cpr_active_{active_key}_v{_cv}",
             )
         with c2:
             new_psa = st.number_input(
@@ -429,7 +513,7 @@ with st.sidebar:
                 max_value=1000.0,
                 value=float(shock_psa_inputs.get(active_key, DEFAULT_SHOCK_PSA_PCT.get(active_key, 100.0))),
                 step=5.0,
-                key=f"psa_active_{active_key}",
+                key=f"psa_active_{active_key}_v{_cv}",
             )
         st.session_state["shock_cpr_store"][active_key] = float(new_cpr)
         st.session_state["shock_psa_store"][active_key] = float(new_psa)
@@ -464,7 +548,7 @@ def run_model(
     apply_speed: str = "CPR %",
     cpr_pct_items: tuple[tuple[str, float], ...] = (),
     psa_pct_items: tuple[tuple[str, float], ...] = (),
-    _model_version: int = 9,
+    _model_version: int = 10,
 ):
     if csv_bytes:
         assets, liabilities = load_instruments_from_csv(io.BytesIO(csv_bytes))
@@ -640,17 +724,51 @@ c6.metric(
 if cpr_table is not None:
     with st.expander(
         f"Mortgage / MBS CPR & PSA by shock (applied via {apply_speed_used})",
-        expanded=False,
+        expanded=True,
     ):
         st.caption(
             "Both CPR % and PSA % are entered per shock. "
-            f"EVE/NII currently use **{apply_speed_used}**. LCR/NSFR ignore this table."
+            f"EVE/NII currently use **{apply_speed_used}**. LCR/NSFR ignore this table. "
+            "Calibrate from PMMS + WAC in the sidebar."
         )
         st.dataframe(
             cpr_table.as_pct_dataframe(psa_by_key=psa_map or None),
             use_container_width=True,
             hide_index=True,
         )
+    if st.session_state.get("cpr_calib_df") is not None:
+        with st.expander("CPR calibration detail (incentive → historical analogue)", expanded=False):
+            _cdf = st.session_state["cpr_calib_df"]
+            st.dataframe(_cdf, use_container_width=True, hide_index=True)
+            st.download_button(
+                "⬇ Download CPR calibration CSV",
+                _cdf.to_csv(index=False),
+                file_name="cpr_calibration.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+            from src.cpr_calibration import scurve_dataframe
+            _sc = scurve_dataframe()
+            fig_sc = go.Figure()
+            fig_sc.add_trace(go.Scatter(
+                x=_sc["incentive_bp"], y=_sc["cpr_pct"],
+                mode="lines+markers", name="Agency-style S-curve",
+                line=dict(color=NAVY, width=2.5),
+            ))
+            fig_sc.add_trace(go.Scatter(
+                x=_cdf["incentive_bp"], y=_cdf["cpr_pct"],
+                mode="markers+text", name="Scenario points",
+                text=_cdf["key"], textposition="top center",
+                marker=dict(size=10, color=ORANGE),
+            ))
+            fig_sc.add_vline(x=0, line_dash="dot", line_color=BORDER)
+            fig_sc.update_layout(
+                **PLOTLY_BASE, height=340,
+                xaxis=dict(**AXIS_STYLE, title="Refinance incentive (WAC − PMMS), bp"),
+                yaxis=dict(**AXIS_STYLE, title="CPR %"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, bgcolor=BG2),
+            )
+            st.plotly_chart(fig_sc, use_container_width=True)
 
 st.divider()
 

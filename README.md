@@ -13,6 +13,7 @@ End-to-end **Interest Rate Risk in the Banking Book (IRRBB)** engine with:
 - **Live SOFR + USD IRS mid** yield curve (optional)  
 - **DV01 gap** and indicative IRS hedge suggestions  
 - **Key rate duration (KR01)** on the tradeable 1/2/3/5/7/10Y swap grid  
+- **CPR calibration** (PMMS + WAC → S-curve → BCBS scenario CPR/PSA)  
 
 ---
 
@@ -101,7 +102,7 @@ One row per instrument:
 
 **MBS HQLA / NSFR:** Ginnie Mae → LCR Level 1 (0% haircut), NSFR RSF 5%. Fannie/Freddie agency → LCR Level 2A (15% haircut), NSFR RSF 15%. Private-label RMBS → not HQLA; NSFR like other loans (85% if ≥1Y). Whole-loan residential mortgages ≥1Y → RSF 65%. Encumbered >1Y → RSF 100%.
 
-**Mortgage / MBS CPR:** Enter **one CPR % and one PSA %** for Base + each BCBS shock in the Streamlit sidebar; choose which drives EVE/NII. LCR/NSFR ignore those speeds.
+**Mortgage / MBS CPR:** Sidebar **CPR calibration** takes portfolio WAC + current PMMS, maps BCBS shocks through an agency-style refinance S-curve, and fills BASE + six scenario CPR/PSA (with historical analogues). You can still edit one active scenario manually. LCR/NSFR ignore those speeds.
 
 **Tip:** When NMD is enabled, leave demand deposits out of the CSV (or they are replaced). Use the CSV for assets + wholesale funding only.
 
@@ -239,6 +240,7 @@ IRRBB_model/
 ├── src/
 │   ├── cashflows.py       # Instrument CF schedules (+ CPR amortisation)
 │   ├── prepayment.py      # PSA / S-curve CPR (+ optional HF Chronos)
+│   ├── cpr_calibration.py # PMMS+WAC → scenario CPR (Option B)
 │   ├── time_buckets.py    # 19 BCBS buckets
 │   ├── scenarios.py       # Six prescribed shocks
 │   ├── yield_curve.py     # Discounting
