@@ -28,6 +28,7 @@ from src.prepayment import (  # noqa: E402
 )
 from src.calculator import IRRBBCalculator, suggest_irs_hedges  # noqa: E402
 from src.key_rate_duration import (  # noqa: E402
+    build_treasury_alco_pack,
     designate_key_rate_hedges,
     instrument_kr01_attribution,
 )
@@ -463,7 +464,7 @@ def run_model(
     apply_speed: str = "CPR %",
     cpr_pct_items: tuple[tuple[str, float], ...] = (),
     psa_pct_items: tuple[tuple[str, float], ...] = (),
-    _model_version: int = 8,
+    _model_version: int = 9,
 ):
     if csv_bytes:
         assets, liabilities = load_instruments_from_csv(io.BytesIO(csv_bytes))
@@ -1446,7 +1447,19 @@ with tab_kr:
     ) / 100.0
 
     with st.spinner("Building KR01 attribution & scenario hedges…"):
-        pack = calc.treasury_alco_pack(results=results, hedge_ratio=kr_hedge_ratio)
+        actual_eve = {r.scenario.id: r.delta_eve for r in results}
+        pack = build_treasury_alco_pack(
+            assets,
+            liabilities,
+            curve,
+            SCENARIOS,
+            tier1_m=float(tier1),
+            actual_delta_eve=actual_eve,
+            cpr_for_scenario=calc._cpr_override_for,
+            hedge_ratio=kr_hedge_ratio,
+            breach_pct=15.0,
+            amber_pct=10.0,
+        )
 
     kr01_df = pack["kr01"]
     parallel_k = float(pack["parallel_dv01_k"])
