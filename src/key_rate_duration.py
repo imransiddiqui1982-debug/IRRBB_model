@@ -520,6 +520,108 @@ def hedge_efficiency_table(
     return pd.DataFrame(rows)
 
 
+def proposed_swap_notionals(
+    kr01_df: pd.DataFrame,
+    tenors: tuple[float, ...] = (2.0, 5.0, 10.0),
+    hedge_ratio: float = 0.80,
+    min_abs_kr01_k: float = 1.0,
+) -> dict[float, float]:
+    """
+    Indicative pay-fixed notionals ($M) at selected tenors to close net KR01.
+
+    Positive notional = pay-fixed; negative = receive-fixed.
+    """
+    out: dict[float, float] = {}
+    for T in tenors:
+        rows = kr01_df.loc[np.isclose(kr01_df["tenor_years"].astype(float), float(T))]
+        if rows.empty:
+            # nearest key on the grid
+            idx = int(np.argmin(np.abs(kr01_df["tenor_years"].astype(float) - float(T))))
+            row = kr01_df.iloc[idx]
+            T = float(row["tenor_years"])
+            net = float(row["net_kr01_k"])
+        else:
+            net = float(rows.iloc[0]["net_kr01_k"])
+        if abs(net) < min_abs_kr01_k or T <= 0:
+            out[float(T)] = 0.0
+            continue
+        out[float(T)] = net * hedge_ratio / (T * 0.1)
+    return out
+
+
+def post_swap_eve_impact(
+    kr01_df: pd.DataFrame,
+    scenarios: Sequence,
+    tier1_m: float,
+    actual_delta_eve: dict[str, float],
+    notionals: dict[float, float],
+    grid: KeyRateGrid | None = None,
+) -> dict:
+    """
+    Key-wise (bucket) predicted ΔEVE before vs after executing proposed IRS.
+
+    Returns:
+      notionals_df, contrib_before, contrib_after, contrib_delta,
+      summary (ΔEVE $M and % Tier 1 before/after by scenario)
+    """
+    grid = grid or KeyRateGrid()
+    attr0 = eve_attribution_from_kr01(kr01_df, scenarios, actual_delta_eve, grid)
+    kr_h = apply_hedge_notionals_to_kr01(kr01_df, notionals)
+    attr1 = eve_attribution_from_kr01(kr_h, scenarios, None, grid)
+
+    before = attr0["contribution_m"]
+    after = attr1["contribution_m"]
+    # Align columns
+    delta = after - before
+
+    notional_rows = []
+    for T, n in sorted(notionals.items()):
+        structure = (
+            "Pay-fixed / receive-float" if n > 0
+            else ("Receive-fixed / pay-float" if n < 0 else "—")
+        )
+        notional_rows.append({
+            "Tenor": f"{T:g}Y",
+            "Notional ($M)": round(abs(n), 1),
+            "Structure": structure,
+            "Signed notional ($M)": round(n, 1),
+            "Swap KR01 ($K/bp)": round(swap_unit_kr01_k(T, n), 1),
+        })
+    notionals_df = pd.DataFrame(notional_rows)
+
+    summary_rows = []
+    for sc in scenarios:
+        name = sc.name
+        pred0 = float(attr0["predicted_m"][name])
+        pred1 = float(attr1["predicted_m"][name])
+        conv = attr0["convexity_m"].get(name, 0.0)
+        if not np.isfinite(conv):
+            conv = 0.0
+        # Unhedged: prefer actual EVE; hedged: predicted + same convexity approx
+        eve0 = float(actual_delta_eve.get(sc.id, actual_delta_eve.get(name, pred0)))
+        eve1 = pred1 + conv
+        pct0 = eve0 / tier1_m * 100.0 if tier1_m else 0.0
+        pct1 = eve1 / tier1_m * 100.0 if tier1_m else 0.0
+        summary_rows.append({
+            "Scenario": name,
+            "ΔEVE before ($M)": round(eve0, 2),
+            "ΔEVE after ($M)": round(eve1, 2),
+            "ΔEVE change ($M)": round(eve1 - eve0, 2),
+            "% Tier 1 before": round(pct0, 1),
+            "% Tier 1 after": round(pct1, 1),
+            "pp change": round(pct1 - pct0, 1),
+        })
+
+    return {
+        "notionals": notionals_df,
+        "contrib_before": before.round(2),
+        "contrib_after": after.round(2),
+        "contrib_delta": delta.round(2),
+        "summary": pd.DataFrame(summary_rows),
+        "kr01_after": kr_h,
+    }
+
+
 def why_hedge_rationale(
     limit_df: pd.DataFrame,
     contribution_m: pd.DataFrame,
@@ -722,6 +824,12 @@ def build_treasury_alco_pack(
         assets, liabilities, curve, scenarios, cpr_for_scenario, grid,
     )
     hedges = suggest_key_rate_hedges(kr01, hedge_ratio=hedge_ratio)
+    ladder_notionals = proposed_swap_notionals(
+        kr01, tenors=(2.0, 5.0, 10.0), hedge_ratio=hedge_ratio,
+    )
+    post_swap = post_swap_eve_impact(
+        kr01, scenarios, tier1_m, actual_delta_eve, ladder_notionals, grid,
+    )
     return {
         "kr01": kr01,
         "shock_bp": attr["shock_bp"],
@@ -734,5 +842,7 @@ def build_treasury_alco_pack(
         "packages_detail": packages_detail,
         "scenario_kr01": scenario_kr01,
         "hedges": hedges,
+        "ladder_notionals": ladder_notionals,
+        "post_swap": post_swap,
         "parallel_dv01_k": parallel_dv01(assets, liabilities, curve, cpr_base),
     }

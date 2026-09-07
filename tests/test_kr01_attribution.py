@@ -75,6 +75,23 @@ def test_hedge_efficiency_pay_fixed_helps_par_up():
     assert row10["KR01 ($K/bp)"] < 0
 
 
+def test_post_swap_improves_or_changes_par_up(calc):
+    from src.key_rate_duration import proposed_swap_notionals, post_swap_eve_impact
+
+    results = calc.run_all(SCENARIOS)
+    actual = {r.scenario.id: r.delta_eve for r in results}
+    kr = calc.key_rate_duration_gap()
+    notionals = proposed_swap_notionals(kr, hedge_ratio=1.0)
+    post = post_swap_eve_impact(kr, SCENARIOS, 500.0, actual, notionals)
+    assert not post["summary"].empty
+    assert list(post["contrib_after"].index) == list(post["contrib_before"].index)
+    # After full hedge, predicted |ΔEVE| on parallel up should shrink vs before
+    par = next(s.name for s in SCENARIOS if s.id == "PS_UP")
+    before = abs(float(post["contrib_before"][par].sum()))
+    after = abs(float(post["contrib_after"][par].sum()))
+    assert after <= before + 1e-6
+
+
 def test_treasury_alco_pack(calc):
     pack = calc.treasury_alco_pack(hedge_ratio=0.8)
     assert "limits" in pack and not pack["limits"].empty
@@ -83,4 +100,6 @@ def test_treasury_alco_pack(calc):
     assert "packages_pct" in pack
     assert "scenario_kr01" in pack
     assert "rationale" in pack
+    assert "post_swap" in pack
+    assert "summary" in pack["post_swap"]
     assert set(pack["limits"]["Status"]).issubset({"ok", "AMBER", "BREACH"})

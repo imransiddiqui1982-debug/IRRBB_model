@@ -1792,6 +1792,113 @@ with tab_kr:
             hide_index=True,
         )
 
+        st.markdown(
+            "**Post-swap EVE impact (2Y / 5Y / 10Y ladder)**  ·  "
+            "same bridge: cell = −KR01 × shock_bp / 1000"
+        )
+        st.caption(
+            "Proposed notionals close the target hedge ratio of net KR01 at 2Y, 5Y and 10Y "
+            "(positive = pay-fixed). Adjust sizes below to stress the desk tickets."
+        )
+        _ln = pack.get("ladder_notionals") or {}
+        n2_def = float(_ln.get(2.0, 0.0))
+        n5_def = float(_ln.get(5.0, 0.0))
+        n10_def = float(_ln.get(10.0, 0.0))
+        hc1, hc2, hc3 = st.columns(3)
+        with hc1:
+            n2 = st.number_input(
+                "2Y signed notional ($M)",
+                value=round(n2_def, 1), step=5.0, key="hedge_n_2y",
+                help="Positive = pay-fixed; negative = receive-fixed.",
+            )
+        with hc2:
+            n5 = st.number_input(
+                "5Y signed notional ($M)",
+                value=round(n5_def, 1), step=5.0, key="hedge_n_5y",
+            )
+        with hc3:
+            n10 = st.number_input(
+                "10Y signed notional ($M)",
+                value=round(n10_def, 1), step=5.0, key="hedge_n_10y",
+            )
+        from src.key_rate_duration import post_swap_eve_impact
+        custom_notionals = {2.0: float(n2), 5.0: float(n5), 10.0: float(n10)}
+        post = post_swap_eve_impact(
+            kr01_df,
+            SCENARIOS,
+            float(tier1),
+            {r.scenario.id: r.delta_eve for r in results},
+            custom_notionals,
+        )
+
+        st.markdown("**Proposed swaps executed**")
+        st.dataframe(post["notionals"], use_container_width=True, hide_index=True)
+
+        st.markdown("**Key-wise predicted ΔEVE after swaps ($M)**")
+        st.dataframe(
+            post["contrib_after"].style.format("{:+.2f}"),
+            use_container_width=True,
+        )
+        with st.expander("▼ Key-wise change vs unhedged (after − before, $M)"):
+            st.dataframe(
+                post["contrib_delta"].style.format("{:+.2f}"),
+                use_container_width=True,
+            )
+            st.caption(
+                "Only 2Y / 5Y / 10Y rows move from the swaps; other keys unchanged "
+                "under this linear ladder."
+            )
+
+        st.markdown("**Total ΔEVE and % of Tier 1 — before vs after swaps**")
+        summ = post["summary"]
+        st.dataframe(
+            summ.style.format({
+                "ΔEVE before ($M)": "{:+.2f}",
+                "ΔEVE after ($M)": "{:+.2f}",
+                "ΔEVE change ($M)": "{:+.2f}",
+                "% Tier 1 before": "{:+.1f}",
+                "% Tier 1 after": "{:+.1f}",
+                "pp change": "{:+.1f}",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        fig_t1 = go.Figure()
+        fig_t1.add_trace(go.Bar(
+            name="% Tier 1 before",
+            x=summ["Scenario"], y=summ["% Tier 1 before"],
+            marker_color=ORANGE, opacity=0.85,
+        ))
+        fig_t1.add_trace(go.Bar(
+            name="% Tier 1 after",
+            x=summ["Scenario"], y=summ["% Tier 1 after"],
+            marker_color=BLUE, opacity=0.85,
+        ))
+        fig_t1.add_hline(
+            y=-15, line_dash="dash", line_color=RED,
+            annotation_text="15% breach", annotation_font=dict(color=RED, size=9),
+        )
+        fig_t1.add_hline(
+            y=-10, line_dash="dot", line_color=AMBER,
+            annotation_text="10% amber", annotation_font=dict(color=AMBER, size=9),
+        )
+        fig_t1.update_layout(
+            **PLOTLY_BASE, height=380, barmode="group",
+            yaxis=dict(**AXIS_STYLE, title="ΔEVE / Tier 1 (%)"),
+            xaxis=dict(**AXIS_STYLE, tickangle=-25),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, bgcolor=BG2),
+        )
+        st.plotly_chart(fig_t1, use_container_width=True)
+
+        st.download_button(
+            "⬇ Download post-swap EVE impact CSV",
+            summ.to_csv(index=False),
+            file_name="post_swap_eve_impact.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
         st.markdown("**Why these IRS?**")
         for note in pack["rationale"]:
             st.markdown(f"- {note}")
