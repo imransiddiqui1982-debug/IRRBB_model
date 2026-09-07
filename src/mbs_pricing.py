@@ -294,6 +294,38 @@ def is_option_adjusted_prepayable(inst) -> bool:
     return False
 
 
+def apply_portfolio_wac_pmms(
+    instruments: Sequence,
+    curve: YieldCurve,
+    wac_pct: float,
+    pmms_pct: float,
+) -> int:
+    """
+    Overlay sidebar portfolio WAC + PMMS onto option-adjusted pools.
+
+    Sets each OA instrument's ``wac`` and implies ``spread_to_curve`` so that
+    Step A mortgage rate ≈ PMMS at the instrument anchor on ``curve``.
+    Returns the number of instruments updated.
+    """
+    n = 0
+    wac = float(wac_pct) / 100.0 if float(wac_pct) > 1.0 else float(wac_pct)
+    pmms = float(pmms_pct) / 100.0 if float(pmms_pct) > 1.0 else float(pmms_pct)
+    for inst in instruments:
+        if not is_option_adjusted_prepayable(inst):
+            continue
+        anchor = float(getattr(inst, "anchor_tenor", DEFAULT_ANCHOR_TENOR) or DEFAULT_ANCHOR_TENOR)
+        # mortgage_rate = curve.rate(anchor) + spread  ≈  PMMS
+        spread = pmms - float(curve.rate(anchor))
+        spread = float(np.clip(spread, -0.05, 0.12))
+        inst.wac = wac
+        inst.spread_to_curve = spread
+        # keep coupon label roughly aligned for reports
+        if hasattr(inst, "coupon_pct"):
+            inst.coupon_pct = wac * 100.0
+        n += 1
+    return n
+
+
 def prepayment_diagnostics(
     instruments: Sequence,
     curve: YieldCurve,

@@ -406,10 +406,10 @@ with st.sidebar:
     st.markdown("<p class='section-label'>Mortgage / MBS CPR (S-curve)</p>",
                 unsafe_allow_html=True)
     st.caption(
-        "EVE / KR01 use **live** option-adjusted pricing (curve anchor -> refi "
-        "incentive -> monthly CPR -> CFs) from each pool's WAC / spread / aging in "
-        "the balance sheet. Sidebar WAC + PMMS drive the **diagnostic** S-curve "
-        "table below (reporting). LCR/NSFR use contractual maturity only — never CPR."
+        "Sidebar **WAC** and **PMMS** drive live EVE / KR01 for MBS and whole loans: "
+        "WAC is applied to each OA pool; PMMS sets the primary-secondary spread so "
+        "mortgage rate ≈ PMMS at the pool anchor. Refi incentive = WAC − mortgage rate. "
+        "LCR/NSFR still use contractual maturity only."
     )
 
     cal_wac = st.number_input(
@@ -547,7 +547,9 @@ def run_model(
     apply_speed: str = "CPR %",
     cpr_pct_items: tuple[tuple[str, float], ...] = (),
     psa_pct_items: tuple[tuple[str, float], ...] = (),
-    _model_version: int = 12,
+    portfolio_wac_pct: float = 5.50,
+    portfolio_pmms_pct: float = 6.50,
+    _model_version: int = 13,
 ):
     if csv_bytes:
         assets, liabilities = load_instruments_from_csv(io.BytesIO(csv_bytes))
@@ -565,6 +567,15 @@ def run_model(
         curve = YieldCurve(ref_tenors=list(curve_tenors), ref_rates=list(curve_rates))
     else:
         curve = YieldCurve()
+
+    # Sidebar WAC + PMMS → live OA prepay (EVE / KR01)
+    from src.mbs_pricing import apply_portfolio_wac_pmms
+    apply_portfolio_wac_pmms(
+        list(assets) + list(liabilities),
+        curve,
+        portfolio_wac_pct,
+        portfolio_pmms_pct,
+    )
 
     cpr_table = None
     psa_map: dict[str, float] = {}
@@ -647,6 +658,8 @@ try:
         apply_speed,
         tuple(sorted(shock_cpr_inputs.items())) if use_custom_cpr else (),
         tuple(sorted(shock_psa_inputs.items())) if use_custom_cpr else (),
+        float(cal_wac),
+        float(cal_pmms),
     )
 except UnicodeDecodeError:
     st.error(
