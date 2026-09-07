@@ -90,19 +90,22 @@ One row per instrument:
 | `side` | Yes | `asset` or `liability` |
 | `notional` | Yes | USD millions |
 | `coupon_pct` | Yes | Annual coupon % |
-| `instrument_type` | Yes | `bullet_fixed` \| `bullet_floating` \| `amortising` \| `mbs` \| `demand_deposit` |
+| `instrument_type` | Yes | `bullet_fixed` \| `bullet_floating` \| `amortising` \| `mbs` \| `whole_loan` \| `demand_deposit` |
 | `maturity_years` | Yes | Contractual maturity (years) |
-| `payment_freq` | No | Payments per year (default 2) |
-| `repricing_years` | No | Next reset for floaters |
-| `prepay_enabled` | No | `1`/`Y` enables CPR on amortising loans (auto-on if name contains "mortgage") |
-| `base_cpr` | No | Fixed annual CPR override (fraction or %); blank → S-curve from rate incentive |
-| `age_months` | No | Loan age for PSA seasoning (default 0) |
+| `payment_freq` | No | Payments/year (default 2) |
+| `repricing_years` | No | Next reset (floating / NMD) |
+| `prepay_enabled` | No | `1`/`Y` enables CPR on amortising (auto-on if name contains "mortgage") |
+| `base_cpr` | No | Legacy fixed CPR override; blank → option-adjusted path for MBS/whole loans |
+| `age_months` / `pool_age_months` | No | Seasoning for OA ramp / PSA |
+| `wac`, `wam_months`, `anchor_tenor`, `spread_to_curve`, `oas` | No | Option-adjusted MBS / whole-loan terms (Steps A–C) |
 | `mbs_level` | No | For MBS: `ginnie` (L1) \| `agency` (L2A) \| `private` (not HQLA) |
+| `hqla_level`, `nsfr_rsf_factor` | No | Static LCR/NSFR tags (never from CPR); whole loans → not HQLA / ~65% RSF |
+| `credit_spread` | No | Whole-loan placeholder only (not in IRRBB pricing) |
 | `encumbered` | No | `1`/`Y` → NSFR RSF 100% if maturity >1Y |
 
-**MBS HQLA / NSFR:** Ginnie Mae → LCR Level 1 (0% haircut), NSFR RSF 5%. Fannie/Freddie agency → LCR Level 2A (15% haircut), NSFR RSF 15%. Private-label RMBS → not HQLA; NSFR like other loans (85% if ≥1Y). Whole-loan residential mortgages ≥1Y → RSF 65%. Encumbered >1Y → RSF 100%.
+**MBS HQLA / NSFR:** Ginnie Mae → LCR Level 1 (0% haircut), NSFR RSF 5%. Fannie/Freddie agency → LCR Level 2A (15% haircut), NSFR RSF 15%. Private-label RMBS → not HQLA; NSFR RSF ~85%. Whole-loan residential mortgages ≥1Y → RSF 65%, **never HQLA**. Encumbered >1Y → RSF 100%. Residual maturity is **contractual** (CPR never feeds LCR/NSFR).
 
-**Mortgage / MBS CPR:** Sidebar **CPR calibration** takes portfolio WAC + current PMMS, maps BCBS shocks through an agency-style refinance S-curve, and fills BASE + six scenario CPR/PSA (with historical analogues). You can still edit one active scenario manually. LCR/NSFR ignore those speeds.
+**Mortgage / MBS CPR:** Option-adjusted pricing (Steps A→B→C): curve anchor → refi incentive → monthly CPR → cash flows, re-derived on every EVE/KR01 curve bump. Balance-sheet types: `mbs` and `whole_loan`. Sidebar WAC+PMMS remains a diagnostic S-curve.
 
 **Tip:** When NMD is enabled, leave demand deposits out of the CSV (or they are replaced). Use the CSV for assets + wholesale funding only.
 

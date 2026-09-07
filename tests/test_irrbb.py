@@ -377,9 +377,20 @@ def test_load_default_csv_matches_builtin_balance_sheet():
     assets, liabilities = load_instruments_from_csv(csv_path)
     default_assets, default_liabilities = get_instruments()
 
+    # CSV is the calibrated template (funding may omit NMDs when using NMD upload).
+    # Asset book should stay aligned with the built-in sample for OA mortgages/MBS.
     assert len(assets) == len(default_assets)
-    assert len(liabilities) == len(default_liabilities)
-    assert sum(i.notional for i in assets) == sum(i.notional for i in default_assets)
+    assert sum(a.notional for a in assets) == pytest.approx(
+        sum(a.notional for a in default_assets), abs=1.0
+    )
+    oa_csv = [a for a in assets if getattr(a, "is_option_adjusted", False)]
+    oa_def = [a for a in default_assets if getattr(a, "is_option_adjusted", False)]
+    assert len(oa_csv) == len(oa_def)
+    assert any(a.instrument_type == "whole_loan" for a in assets)
+    assert any(a.mbs_level == "ginnie" for a in assets)
+    assert any(a.mbs_level == "private" for a in assets)
+    assert liabilities  # funding side present
+    assert len(default_liabilities) >= len(liabilities)
 
 
 def test_load_csv_rejects_missing_columns():

@@ -121,7 +121,9 @@ class IRRBBCalculator:
         return self.cpr_table.cpr_for_scenario(scenario_id)
 
     def _instrument_base_cfs(self, inst: Instrument) -> np.ndarray:
-        """Bucket CFs under the base yield curve (incentive or user CPR)."""
+        """Bucket CFs under the base yield curve (live OA or incentive CPR)."""
+        if getattr(inst, "is_option_adjusted", False):
+            return inst.bucket_cashflows_under_curve(self.curve)
         if inst.is_prepayable:
             cpr = self._cpr_override_for("BASE")
             mkt = scenario_market_mortgage_rate(
@@ -135,7 +137,11 @@ class IRRBBCalculator:
         inst: Instrument,
         scenario: Scenario,
     ) -> np.ndarray:
-        """Bucket CFs under scenario discount + CPR (negative convexity)."""
+        """Bucket CFs under scenario curve (live OA re-derives CPR each time)."""
+        if getattr(inst, "is_option_adjusted", False):
+            from .key_rate_duration import shocked_yield_curve
+            shocked = shocked_yield_curve(self.curve, scenario.shocks_bp, scenario=scenario)
+            return inst.bucket_cashflows_under_curve(shocked)
         if inst.is_prepayable:
             cpr = self._cpr_override_for(scenario.id)
             mkt = scenario_market_mortgage_rate(
@@ -165,26 +171,41 @@ class IRRBBCalculator:
     def calc_eve(self, scenario: Scenario) -> tuple[float, float, float]:
         """
         Returns (delta_eve, asset_contribution, liability_contribution).
-        ΔEVE = [PV_shocked(assets) - PV_base(assets)]
-               - [PV_shocked(liabs) - PV_base(liabs)]
 
-        Prepayable mortgages regenerate CF schedules under the shocked
-        primary mortgage rate before discounting (behavioural optionality).
+        Option-adjusted MBS / whole loans use full Step-C PV on base vs shocked
+        curves (live CPR). Other instruments use bucket CF × discount factors.
         """
-        asset_shocked = np.array([
-            self._instrument_shocked_cfs(i, scenario) for i in self.assets
-        ])
-        liab_shocked = np.array([
-            self._instrument_shocked_cfs(i, scenario) for i in self.liabilities
-        ])
+        from .key_rate_duration import shocked_yield_curve
+        shocked_curve = shocked_yield_curve(
+            self.curve, scenario.shocks_bp, scenario=scenario,
+        )
 
-        pv_base_a = self._pv_matrix(self._asset_cfs, None)
-        pv_shocked_a = self._pv_matrix(asset_shocked, scenario.shocks_bp)
-        pv_base_l = self._pv_matrix(self._liab_cfs, None)
-        pv_shocked_l = self._pv_matrix(liab_shocked, scenario.shocks_bp)
-
-        eve_asset = float(np.sum(pv_shocked_a - pv_base_a))
-        eve_liab = float(np.sum(pv_shocked_l - pv_base_l))
+        eve_asset = 0.0
+        eve_liab = 0.0
+        for inst in self.assets:
+            if getattr(inst, "is_option_adjusted", False):
+                eve_asset += inst.pv_under_curve(shocked_curve) - inst.pv_under_curve(self.curve)
+            else:
+                base = self._pv_matrix(
+                    np.array([self._instrument_base_cfs(inst)]), None
+                )[0]
+                sh = self._pv_matrix(
+                    np.array([self._instrument_shocked_cfs(inst, scenario)]),
+                    scenario.shocks_bp,
+                )[0]
+                eve_asset += float(sh - base)
+        for inst in self.liabilities:
+            if getattr(inst, "is_option_adjusted", False):
+                eve_liab += inst.pv_under_curve(shocked_curve) - inst.pv_under_curve(self.curve)
+            else:
+                base = self._pv_matrix(
+                    np.array([self._instrument_base_cfs(inst)]), None
+                )[0]
+                sh = self._pv_matrix(
+                    np.array([self._instrument_shocked_cfs(inst, scenario)]),
+                    scenario.shocks_bp,
+                )[0]
+                eve_liab += float(sh - base)
         return eve_asset - eve_liab, eve_asset, eve_liab
 
     # ── NII ───────────────────────────────────────────────────────────────────
@@ -420,27 +441,44 @@ class IRRBBCalculator:
 
     def instrument_eve_detail(self, scenario: Scenario) -> pd.DataFrame:
         """Per-instrument ΔEVE breakdown — useful for attribution."""
+        from .key_rate_duration import shocked_yield_curve
+        from .mbs_pricing import step_a_mortgage_rate, step_b_cpr, terms_from_instrument
+
+        shocked_curve = shocked_yield_curve(
+            self.curve, scenario.shocks_bp, scenario=scenario,
+        )
         rows = []
-        for sign, instruments, base_matrix in (
-            (+1, self.assets, self._asset_cfs),
-            (-1, self.liabilities, self._liab_cfs),
+        for sign, instruments in (
+            (+1, self.assets),
+            (-1, self.liabilities),
         ):
-            shocked_matrix = np.array([
-                self._instrument_shocked_cfs(i, scenario) for i in instruments
-            ])
-            pv_base = self._pv_matrix(base_matrix, None)
-            pv_shocked = self._pv_matrix(shocked_matrix, scenario.shocks_bp)
-            for inst, pv_b, pv_s in zip(instruments, pv_base, pv_shocked):
+            for inst in instruments:
+                if getattr(inst, "is_option_adjusted", False):
+                    pv_b = inst.pv_under_curve(self.curve)
+                    pv_s = inst.pv_under_curve(shocked_curve)
+                    terms = terms_from_instrument(inst)
+                    _, inc = step_a_mortgage_rate(shocked_curve, terms)
+                    cpr = step_b_cpr(terms, inc, max(float(terms.pool_age_months), 60.0))
+                    cpr_note = f"{cpr * 100:.1f}% (OA)"
+                else:
+                    base_cf = self._instrument_base_cfs(inst)
+                    shocked_cf = self._instrument_shocked_cfs(inst, scenario)
+                    pv_b = float(self._pv_matrix(np.array([base_cf]), None)[0])
+                    pv_s = float(self._pv_matrix(
+                        np.array([shocked_cf]), scenario.shocks_bp,
+                    )[0])
+                    cpr_note = ""
+                    if inst.is_prepayable:
+                        cpr = self._cpr_override_for(scenario.id)
+                        if cpr is None:
+                            mkt = scenario_market_mortgage_rate(
+                                self.curve.base_rates,
+                                scenario.shocks_bp,
+                                inst.maturity_years,
+                            )
+                            cpr = inst.resolve_cpr(mkt)
+                        cpr_note = f"{cpr * 100:.1f}%"
                 delta_pv = sign * (pv_s - pv_b)
-                cpr_note = ""
-                if inst.is_prepayable:
-                    cpr = self._cpr_override_for(scenario.id)
-                    if cpr is None:
-                        mkt = scenario_market_mortgage_rate(
-                            self.curve.base_rates, scenario.shocks_bp, inst.maturity_years,
-                        )
-                        cpr = inst.resolve_cpr(mkt)
-                    cpr_note = f"{cpr * 100:.1f}%"
                 rows.append({
                     "side":          inst.side.upper(),
                     "instrument":    inst.name,

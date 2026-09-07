@@ -43,10 +43,9 @@ class YieldCurve:
     """
     Yield curve with one base rate per BCBS 368 time bucket.
 
-    Parameters
-    ----------
-    ref_tenors : list of reference tenor points (years)
-    ref_rates  : list of corresponding rates (decimal)
+    Continuous pillar rates (``_ref_tenors`` / ``_ref_rates``) drive
+    ``rate(t)`` for MBS Step A/C; bucket ``base_rates`` drive EVE discounting
+    of non-OA instruments.
     """
 
     def __init__(
@@ -54,10 +53,27 @@ class YieldCurve:
         ref_tenors: list[float] = _REF_TENORS,
         ref_rates:  list[float] = _REF_RATES,
     ):
-        # Interpolate base rates at each of the 19 bucket midpoints
+        self._ref_tenors = list(ref_tenors)
+        self._ref_rates = list(ref_rates)
         self.base_rates: np.ndarray = np.interp(
-            BUCKET_MIDPOINTS, ref_tenors, ref_rates
+            BUCKET_MIDPOINTS, self._ref_tenors, self._ref_rates
         )
+
+    def rate(self, t: float | np.ndarray) -> float | np.ndarray:
+        """
+        Continuously interpolated rate at tenor ``t`` (years).
+
+        Prefers the continuous pillar grid so anchors like 10Y match scenario
+        pillars exactly; falls back to bucket midpoints for KR01-cloned curves.
+        """
+        t_arr = np.asarray(t, dtype=float)
+        if getattr(self, "_ref_tenors", None) and len(self._ref_tenors) >= 2:
+            out = np.interp(t_arr, self._ref_tenors, self._ref_rates)
+        else:
+            out = np.interp(t_arr, BUCKET_MIDPOINTS, self.base_rates)
+        if np.ndim(t) == 0:
+            return float(out)
+        return out
 
     def shocked_rates(self, shocks_bp: list[float]) -> np.ndarray:
         """
@@ -66,6 +82,30 @@ class YieldCurve:
         """
         shocks_dec = np.array(shocks_bp) / 10_000
         return np.maximum(self.base_rates + shocks_dec, 0.0)
+
+    def with_rates(self, rates: np.ndarray) -> "YieldCurve":
+        """Clone with an explicit 19-bucket rate vector (already floored)."""
+        yc = YieldCurve.__new__(YieldCurve)
+        yc.base_rates = np.asarray(rates, dtype=float).copy()
+        yc._ref_tenors = list(BUCKET_MIDPOINTS)
+        yc._ref_rates = list(yc.base_rates)
+        return yc
+
+    def shocked_curve(self, shocks_bp: list[float]) -> "YieldCurve":
+        """
+        Full shocked curve: continuous pillars + bucket rates, floored at 0.
+        """
+        shocks = np.asarray(shocks_bp, dtype=float)
+        pillar_shocks = np.interp(
+            np.asarray(self._ref_tenors, dtype=float),
+            np.asarray(BUCKET_MIDPOINTS, dtype=float),
+            shocks,
+        )
+        new_ref = np.maximum(
+            np.asarray(self._ref_rates, dtype=float) + pillar_shocks / 10_000.0,
+            0.0,
+        )
+        return YieldCurve(list(self._ref_tenors), list(new_ref))
 
     def discount_factors(self, rates: np.ndarray) -> np.ndarray:
         """

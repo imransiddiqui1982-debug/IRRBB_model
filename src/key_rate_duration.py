@@ -70,6 +70,8 @@ def _clone_curve(base_rates: np.ndarray) -> YieldCurve:
     """Build a YieldCurve whose bucket rates equal ``base_rates`` exactly."""
     curve = YieldCurve.__new__(YieldCurve)
     curve.base_rates = np.asarray(base_rates, dtype=float).copy()
+    curve._ref_tenors = list(BUCKET_MIDPOINTS)
+    curve._ref_rates = list(curve.base_rates)
     return curve
 
 
@@ -91,7 +93,15 @@ def _instrument_cf_vector(
     curve: YieldCurve,
     cpr_override: float | None = None,
 ) -> np.ndarray:
-    """Bucket cash flows; prepayable instruments use curve-implied mortgage rate."""
+    """
+    Bucket cash flows under ``curve``.
+
+    Option-adjusted MBS / whole loans ALWAYS re-derive CPR from the curve
+    (Steps A/B/C). ``cpr_override`` is ignored for those instruments so KR01
+    bumps never freeze the prepayment schedule.
+    """
+    if getattr(inst, "is_option_adjusted", False):
+        return inst.bucket_cashflows_under_curve(curve)
     if getattr(inst, "is_prepayable", False):
         mkt = scenario_market_mortgage_rate(
             curve.base_rates, None, inst.maturity_years,
@@ -109,6 +119,9 @@ def instrument_pv(
     cpr_override: float | None = None,
 ) -> float:
     """Present value of one instrument under ``curve`` ($M)."""
+    if getattr(inst, "is_option_adjusted", False):
+        # Full Step-C OAS discounting — re-derived every bump
+        return float(inst.pv_under_curve(curve))
     cfs = _instrument_cf_vector(inst, curve, cpr_override=cpr_override)
     return float(curve.pv_cashflows(cfs))
 
@@ -335,8 +348,33 @@ def instrument_kr01_attribution(
 
 # ── KR01 ↔ EVE bridge (ALCO / Board / Treasury) ───────────────────────────────
 
-def shocked_yield_curve(curve: YieldCurve, shocks_bp: Sequence[float]) -> YieldCurve:
-    """Apply BCBS bucket shocks (bp) to produce a new YieldCurve."""
+def shocked_yield_curve(
+    curve: YieldCurve,
+    shocks_bp: Sequence[float],
+    scenario=None,
+) -> YieldCurve:
+    """
+    Apply BCBS shocks to produce a new YieldCurve.
+
+    When ``scenario`` is provided, pillar shocks (``ref_shocks_bp``) are applied
+    on ``REF_TENORS`` so MBS anchors (e.g. 10Y) match the scenario grid exactly.
+    """
+    if scenario is not None and hasattr(scenario, "ref_shocks_bp"):
+        from .scenarios import REF_TENORS
+        ref_t = list(dict.fromkeys(
+            list(getattr(curve, "_ref_tenors", [])) + list(REF_TENORS) + [10.0, 20.0, 30.0]
+        ))
+        ref_t = sorted(float(x) for x in ref_t)
+        base_at = np.array([float(curve.rate(t)) for t in ref_t], dtype=float)
+        shock_at = np.interp(
+            np.asarray(ref_t, dtype=float),
+            np.asarray(REF_TENORS, dtype=float),
+            np.asarray(scenario.ref_shocks_bp, dtype=float),
+        )
+        new_rates = np.maximum(base_at + shock_at / 10_000.0, 0.0)
+        return YieldCurve(ref_t, list(new_rates))
+    if hasattr(curve, "shocked_curve"):
+        return curve.shocked_curve(list(shocks_bp))
     return _clone_curve(curve.shocked_rates(list(shocks_bp)))
 
 
@@ -805,7 +843,7 @@ def compute_kr01_under_scenarios(
     out = pd.DataFrame({"Key": base["label"], "Base": base["net_kr01_k"].values})
     for sc in scenarios:
         cpr = cpr_for_scenario(sc.id) if cpr_for_scenario else None
-        shocked = shocked_yield_curve(curve, sc.shocks_bp)
+        shocked = shocked_yield_curve(curve, sc.shocks_bp, scenario=sc)
         kr = compute_kr01(assets, liabilities, shocked, grid, cpr_override=cpr)
         out[sc.name] = kr["net_kr01_k"].values
     return out.set_index("Key")

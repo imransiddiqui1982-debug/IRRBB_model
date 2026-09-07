@@ -1,20 +1,22 @@
-name,side,notional,coupon_pct,instrument_type,maturity_years,payment_freq,repricing_years,prepay_enabled,base_cpr,age_months,market_mortgage_rate,mbs_level,encumbered
-Cash & Central Bank Reserves,asset,150,0.5,bullet_floating,0.08333333333333333,12,0.08333333333333333,0,,,,,
-T-Bills (3M),asset,100,4.9,bullet_fixed,0.25,1,0.25,0,,,,,
-Floating Rate Notes (6M reset),asset,200,5.8,bullet_floating,3.0,2,0.5,0,,,,,
-Fixed Gov Bonds (2Y),asset,200,4.1,bullet_fixed,2.0,2,2.0,0,,,,,
-"Floating Corp Loans (3Y, qtrly reset)",asset,600,6.5,bullet_floating,3.0,4,0.25,0,,,,,
-"Fixed Retail Loans (4Y, amortising)",asset,250,5.8,amortising,4.0,12,4.0,0,,,,,
-Fixed Gov Bonds (5Y),asset,300,3.95,bullet_fixed,5.0,2,5.0,0,,,,,
-"Fixed-Rate Mortgages (10Y, amortising)",asset,500,5.2,amortising,10.0,12,10.0,1,,24,,,0
-"Fixed-Rate Mortgages (30Y, amortising)",asset,100,5.5,amortising,30.0,12,30.0,1,,36,,,0
-Ginnie Mae MBS Pass-Through,asset,150,4.5,mbs,15.0,12,15.0,1,,36,,ginnie,0
-"Fannie/Freddie Agency MBS",asset,150,4.8,mbs,15.0,12,15.0,1,,36,,agency,0
-Fixed Gov Bonds (15Y),asset,200,3.5,bullet_fixed,15.0,2,15.0,0,,,,,
-Fixed Infrastructure Bonds (20Y),asset,100,4.2,bullet_fixed,20.0,2,20.0,0,,,,,
-Overnight Repo,liability,100,5.1,bullet_floating,0.0027397260273972603,365,0.0027397260273972603,0,,,,,
-"Floating Senior Debt (3Y, semi reset)",liability,300,5.8,bullet_floating,3.0,2,0.5,0,,,,,
-Fixed-Rate Covered Bonds (5Y),liability,300,4.3,bullet_fixed,5.0,2,5.0,0,,,,,
-Fixed-Rate Borrowings (7Y),liability,200,4.5,bullet_fixed,7.0,2,7.0,0,,,,,
-Subordinated Debt (10Y),liability,200,5.0,bullet_fixed,10.0,2,10.0,0,,,,,
-Tier 2 Capital Notes (15Y),liability,100,5.5,bullet_fixed,15.0,2,15.0,0,,,,,
+name,side,notional,coupon_pct,instrument_type,maturity_years,payment_freq,repricing_years,prepay_enabled,base_cpr,age_months,market_mortgage_rate,mbs_level,encumbered,wac,wam_months,pool_age_months,anchor_tenor,spread_to_curve,oas,hqla_level,nsfr_rsf_factor,credit_spread,use_option_adjusted
+Cash & Central Bank Reserves,asset,150,0.5,bullet_floating,0.08333333333333333,12,0.08333333333333333,0,,,,,,,,,,,,,
+T-Bills (3M),asset,100,4.9,bullet_fixed,0.25,1,0.25,0,,,,,,,,,,,,,
+Floating Rate Notes (6M reset),asset,200,5.8,bullet_floating,3.0,2,0.5,0,,,,,,,,,,,,,
+Fixed Gov Bonds (2Y),asset,200,4.1,bullet_fixed,2.0,2,2.0,0,,,,,,,,,,,,,
+"Floating Corp Loans (3Y, qtrly reset)",asset,500,6.5,bullet_floating,3.0,4,0.25,0,,,,,,,,,,,,,
+"Fixed Retail Loans (4Y, amortising)",asset,200,5.8,amortising,4.0,12,4.0,0,,,,,,,,,,,,,
+Fixed Gov Bonds (5Y),asset,250,3.95,bullet_fixed,5.0,2,5.0,0,,,,,,,,,,,,,
+"Whole-Loan Mortgages 30Y (WAC 5.5, vintage)",asset,350,5.5,whole_loan,30.0,12,30.0,1,,36,,,0,0.055,324,36,10.0,0.0175,0.005,not_eligible,0.65,0.0,1
+"Whole-Loan Mortgages 15Y (WAC 4.8)",asset,200,4.8,whole_loan,15.0,12,15.0,1,,48,,,0,0.048,168,48,7.0,0.0150,0.005,not_eligible,0.65,0.0,1
+"Whole-Loan Mortgages 10Y (WAC 5.2)",asset,150,5.2,whole_loan,10.0,12,10.0,1,,24,,,0,0.052,108,24,7.0,0.0150,0.005,not_eligible,0.65,0.0,1
+Ginnie Mae MBS Pass-Through,asset,150,4.5,mbs,25.0,12,25.0,1,,36,,ginnie,0,0.045,300,36,10.0,0.0175,0.005,level_1,0.05,,1
+"Fannie/Freddie Agency MBS",asset,150,4.8,mbs,25.0,12,25.0,1,,36,,agency,0,0.048,300,36,10.0,0.0175,0.005,level_2a,0.15,,1
+Private-Label RMBS (not HQLA),asset,100,5.8,mbs,20.0,12,20.0,1,,24,,private,0,0.058,240,24,10.0,0.0200,0.010,not_eligible,0.85,,1
+Fixed Gov Bonds (15Y),asset,150,3.5,bullet_fixed,15.0,2,15.0,0,,,,,,,,,,,,,
+Fixed Infrastructure Bonds (20Y),asset,100,4.2,bullet_fixed,20.0,2,20.0,0,,,,,,,,,,,,,
+Overnight Repo,liability,100,5.1,bullet_floating,0.0027397260273972603,365,0.0027397260273972603,0,,,,,,,,,,,,,
+"Floating Senior Debt (3Y, semi reset)",liability,300,5.8,bullet_floating,3.0,2,0.5,0,,,,,,,,,,,,,
+Fixed-Rate Covered Bonds (5Y),liability,300,4.3,bullet_fixed,5.0,2,5.0,0,,,,,,,,,,,,,
+Fixed-Rate Borrowings (7Y),liability,200,4.5,bullet_fixed,7.0,2,7.0,0,,,,,,,,,,,,,
+Subordinated Debt (10Y),liability,200,5.0,bullet_fixed,10.0,2,10.0,0,,,,,,,,,,,,,
+Tier 2 Capital Notes (15Y),liability,100,5.5,bullet_fixed,15.0,2,15.0,0,,,,,,,,,,,,,

@@ -36,8 +36,27 @@ OPTIONAL_COLUMNS = [
     "market_mortgage_rate",
     "mbs_level",
     "encumbered",
+    # Option-adjusted MBS / whole-loan fields
+    "wac",
+    "wam_months",
+    "pool_age_months",
+    "anchor_tenor",
+    "spread_to_curve",
+    "oas",
+    "base_turnover",
+    "max_refi_cpr",
+    "logistic_k",
+    "logistic_midpoint",
+    "seasoning_ramp_months",
+    "hqla_level",
+    "nsfr_rsf_factor",
+    "credit_spread",
+    "use_option_adjusted",
 ]
-VALID_TYPES = {"bullet_fixed", "bullet_floating", "amortising", "mbs", "demand_deposit"}
+VALID_TYPES = {
+    "bullet_fixed", "bullet_floating", "amortising",
+    "mbs", "whole_loan", "demand_deposit",
+}
 VALID_SIDES = {"asset", "liability"}
 
 
@@ -78,6 +97,18 @@ def _validate_dataframe(df: pd.DataFrame) -> None:
         )
 
 
+def _opt_float(row: pd.Series, col: str, default=None):
+    if col not in row.index or pd.isna(row[col]):
+        return default
+    return float(row[col])
+
+
+def _opt_int(row: pd.Series, col: str, default=None):
+    if col not in row.index or pd.isna(row[col]):
+        return default
+    return int(row[col])
+
+
 def _row_to_instrument(row: pd.Series) -> Instrument:
     side = str(row["side"]).strip().lower()
     instrument_type = str(row["instrument_type"]).strip().lower()
@@ -99,7 +130,7 @@ def _row_to_instrument(row: pd.Series) -> Instrument:
     if "base_cpr" in row.index and pd.notna(row["base_cpr"]):
         base_cpr = float(row["base_cpr"])
         if base_cpr > 1.0:
-            base_cpr = base_cpr / 100.0  # allow percent input
+            base_cpr = base_cpr / 100.0
 
     age_months = 0
     if "age_months" in row.index and pd.notna(row["age_months"]):
@@ -120,6 +151,28 @@ def _row_to_instrument(row: pd.Series) -> Instrument:
     if "encumbered" in row.index and pd.notna(row["encumbered"]):
         encumbered = str(row["encumbered"]).strip().lower() in ("1", "true", "yes", "y", "t")
 
+    use_oa = True
+    if "use_option_adjusted" in row.index and pd.notna(row["use_option_adjusted"]):
+        use_oa = str(row["use_option_adjusted"]).strip().lower() in (
+            "1", "true", "yes", "y", "t",
+        )
+
+    wac = _opt_float(row, "wac")
+    if wac is not None and wac > 1.0:
+        wac = wac / 100.0
+
+    spread = _opt_float(row, "spread_to_curve", 0.0175)
+    if spread is not None and spread > 1.0:
+        spread = spread / 10_000.0
+
+    oas = _opt_float(row, "oas", 0.005)
+    if oas is not None and oas > 1.0:
+        oas = oas / 10_000.0
+
+    hqla_level = ""
+    if "hqla_level" in row.index and pd.notna(row["hqla_level"]):
+        hqla_level = str(row["hqla_level"]).strip().lower()
+
     return Instrument(
         name=str(row["name"]).strip(),
         notional=float(row["notional"]),
@@ -135,6 +188,21 @@ def _row_to_instrument(row: pd.Series) -> Instrument:
         market_mortgage_rate=market_mortgage_rate,
         mbs_level=mbs_level,
         encumbered=encumbered,
+        use_option_adjusted=use_oa,
+        wac=wac,
+        wam_months=_opt_int(row, "wam_months"),
+        pool_age_months=_opt_int(row, "pool_age_months"),
+        anchor_tenor=_opt_float(row, "anchor_tenor", 10.0) or 10.0,
+        spread_to_curve=spread if spread is not None else 0.0175,
+        oas=oas if oas is not None else 0.005,
+        base_turnover=_opt_float(row, "base_turnover", 0.06) or 0.06,
+        max_refi_cpr=_opt_float(row, "max_refi_cpr", 0.34) or 0.34,
+        logistic_k=_opt_float(row, "logistic_k", 2.2) or 2.2,
+        logistic_midpoint=_opt_float(row, "logistic_midpoint", 0.60) or 0.60,
+        seasoning_ramp_months=_opt_int(row, "seasoning_ramp_months", 30) or 30,
+        hqla_level=hqla_level,
+        nsfr_rsf_factor=_opt_float(row, "nsfr_rsf_factor"),
+        credit_spread=_opt_float(row, "credit_spread", 0.0) or 0.0,
     )
 
 
@@ -189,5 +257,18 @@ def instruments_to_dataframe(
             ),
             "mbs_level": getattr(inst, "mbs_level", "") or "",
             "encumbered": int(bool(getattr(inst, "encumbered", False))),
+            "wac": "" if getattr(inst, "wac", None) is None else inst.wac,
+            "wam_months": getattr(inst, "wam_months", "") or "",
+            "pool_age_months": getattr(inst, "pool_age_months", "") or "",
+            "anchor_tenor": getattr(inst, "anchor_tenor", 10.0),
+            "spread_to_curve": getattr(inst, "spread_to_curve", 0.0175),
+            "oas": getattr(inst, "oas", 0.005),
+            "hqla_level": getattr(inst, "hqla_level", "") or "",
+            "nsfr_rsf_factor": (
+                "" if getattr(inst, "nsfr_rsf_factor", None) is None
+                else inst.nsfr_rsf_factor
+            ),
+            "credit_spread": getattr(inst, "credit_spread", 0.0) or 0.0,
+            "use_option_adjusted": int(bool(getattr(inst, "use_option_adjusted", True))),
         })
     return pd.DataFrame(rows)

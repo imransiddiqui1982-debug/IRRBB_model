@@ -150,6 +150,24 @@ def nearest_historical_regime(implied_pmms_pct: float) -> dict:
     return dict(best)
 
 
+def format_refi_incentive_bp(bp: float) -> str:
+    """
+    Signed refinance incentive for display.
+
+    Positive (+) = in-the-money to refinance (WAC > market).
+    Negative (−) = out-of-the-money / lock-in (WAC < market).
+    """
+    v = float(bp)
+    if abs(v) < 1e-9:
+        return "0 bp"
+    # Keep one decimal when needed; otherwise integer bp
+    if abs(v - round(v)) < 1e-6:
+        body = f"{int(round(v))}"
+    else:
+        body = f"{v:.1f}"
+    return f"+{body} bp" if v > 0 else f"{body} bp"
+
+
 def calibrate_scenario_cprs(
     inputs: CprCalibrationInputs,
     scenarios: Sequence[Scenario] | None = None,
@@ -158,14 +176,16 @@ def calibrate_scenario_cprs(
     Build BASE + scenario CPR/PSA table from WAC, PMMS, and S-curve.
 
     Returns columns:
-      key, scenario, mortgage_shock_bp, implied_pmms_pct, incentive_bp,
-      cpr_pct, psa_pct, historical_analogue, analogue_note
+      key, scenario, wac_pct, mortgage_shock_bp, implied_pmms_pct,
+      incentive_bp, refi_incentive, cpr_pct, psa_pct,
+      historical_analogue, analogue_note
     """
     scenarios = list(scenarios) if scenarios is not None else list(SCENARIOS)
     rows = []
+    wac = float(inputs.wac_pct)
 
     # BASE
-    base_inc = incentive_bp(inputs.wac_pct, inputs.pmms_pct)
+    base_inc = incentive_bp(wac, inputs.pmms_pct)
     base_cpr = cpr_from_scurve(base_inc, inputs.scurve_points)
     if inputs.use_logistic_fallback:
         # Soft blend with parametric S-curve for smoothness between knots
@@ -175,9 +195,11 @@ def calibrate_scenario_cprs(
     rows.append({
         "key": "BASE",
         "scenario": "Base (no shock)",
+        "wac_pct": round(wac, 3),
         "mortgage_shock_bp": 0.0,
         "implied_pmms_pct": round(inputs.pmms_pct, 3),
         "incentive_bp": round(base_inc, 1),
+        "refi_incentive": format_refi_incentive_bp(base_inc),
         "cpr_pct": round(base_cpr, 2),
         "psa_pct": round(cpr_pct_to_psa_pct(base_cpr, inputs.age_months), 1),
         "historical_analogue": base_analogue["period"],
@@ -187,7 +209,7 @@ def calibrate_scenario_cprs(
     for sc in scenarios:
         shock = mortgage_shock_bp(sc)
         implied_pmms = max(inputs.pmms_pct + shock / 100.0, 0.0)
-        inc = incentive_bp(inputs.wac_pct, implied_pmms)
+        inc = incentive_bp(wac, implied_pmms)
         cpr = cpr_from_scurve(inc, inputs.scurve_points)
         if inputs.use_logistic_fallback:
             log_cpr = s_curve_cpr(inc / 10_000.0, PrepaymentParams()) * 100.0
@@ -196,15 +218,56 @@ def calibrate_scenario_cprs(
         rows.append({
             "key": sc.id,
             "scenario": sc.name,
+            "wac_pct": round(wac, 3),
             "mortgage_shock_bp": round(shock, 1),
             "implied_pmms_pct": round(implied_pmms, 3),
             "incentive_bp": round(inc, 1),
+            "refi_incentive": format_refi_incentive_bp(inc),
             "cpr_pct": round(float(cpr), 2),
             "psa_pct": round(cpr_pct_to_psa_pct(cpr, inputs.age_months), 1),
             "historical_analogue": analogue["period"],
             "analogue_note": analogue["note"],
         })
 
+    return pd.DataFrame(rows)
+
+
+def calibration_display_frame(calib_df: pd.DataFrame) -> pd.DataFrame:
+    """UI columns with signed Refi incentive linked to WAC / PMMS."""
+    cols = [
+        "scenario",
+        "wac_pct",
+        "implied_pmms_pct",
+        "mortgage_shock_bp",
+        "refi_incentive",
+        "cpr_pct",
+        "psa_pct",
+        "historical_analogue",
+    ]
+    out = calib_df[[c for c in cols if c in calib_df.columns]].copy()
+    return out.rename(columns={
+        "scenario": "Scenario",
+        "wac_pct": "WAC %",
+        "implied_pmms_pct": "PMMS %",
+        "mortgage_shock_bp": "Mtg shock (bp)",
+        "refi_incentive": "Refi incentive",
+        "cpr_pct": "CPR %",
+        "psa_pct": "PSA %",
+        "historical_analogue": "Historical analogue",
+    })
+
+
+def scurve_display_frame(
+    scurve_points: Sequence[tuple[float, float]] = DEFAULT_AGENCY_SCURVE,
+) -> pd.DataFrame:
+    """S-curve knots with signed incentive labels."""
+    rows = []
+    for x, y in scurve_points:
+        rows.append({
+            "Refi incentive": format_refi_incentive_bp(x),
+            "incentive_bp": float(x),
+            "CPR %": float(y),
+        })
     return pd.DataFrame(rows)
 
 
@@ -224,7 +287,7 @@ def calibration_to_cpr_maps(calib_df: pd.DataFrame) -> tuple[dict[str, float], d
 def scurve_dataframe(
     scurve_points: Sequence[tuple[float, float]] = DEFAULT_AGENCY_SCURVE,
 ) -> pd.DataFrame:
-    """S-curve table for display / download."""
+    """S-curve table for display / download (numeric incentive_bp)."""
     return pd.DataFrame(
         [{"incentive_bp": x, "cpr_pct": y} for x, y in scurve_points]
     )

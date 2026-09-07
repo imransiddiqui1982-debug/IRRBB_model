@@ -167,17 +167,22 @@ def test_lcr_inflows_include_cpr_principal():
     assert "CPR" in df.iloc[0]["Category"] or "Mortgage" in df.iloc[0]["Category"]
 
 
-def test_nsfr_wal_uses_cpr():
+def test_nsfr_uses_contractual_maturity_not_cpr():
+    """NSFR residual maturity is contractual — never shortened by CPR (spec §1a)."""
     prepaid = Instrument(
         "Fixed-Rate Mortgages", 800, 5.2, "amortising", 10.0,
         payment_freq=12, side="asset",
         prepay_enabled=True, base_cpr=0.30, age_months=30,
+        use_option_adjusted=False,
     )
     static = Instrument(
         "Fixed-Rate Mortgages Static", 800, 5.2, "amortising", 10.0,
         payment_freq=12, side="asset", prepay_enabled=False,
     )
-    assert _residual_maturity_years(prepaid) < _residual_maturity_years(static)
+    assert _residual_maturity_years(prepaid) == pytest.approx(
+        _residual_maturity_years(static)
+    )
+    assert prepaid.wal_years() < static.maturity_years  # WAL still sees CPR
 
 
 def test_sample_book_still_runs():
@@ -209,26 +214,21 @@ def test_mbs_instrument_always_prepays():
     assert any(cf.cf_type == "prepayment" for cf in inst.cashflows)
 
 
-def test_user_cpr_table_drives_eve():
-    """Higher CPR under PS_DOWN shortens duration vs low CPR under PS_UP."""
-    from src.prepayment import ShockCprTable
-
-    curve = YieldCurve(ref_tenors=[0, 30], ref_rates=[0.05, 0.05])
+def test_option_adjusted_mbs_drives_eve_and_kr01():
+    """Live OA path: par-up loss > par-down gain; CPR note shows OA seasoned speed."""
+    curve = YieldCurve(ref_tenors=[0, 30], ref_rates=[0.04, 0.04])
     mbs = Instrument(
-        "Agency MBS", 500, 5.0, "mbs", 15.0,
-        payment_freq=12, side="asset", age_months=36,
+        "Agency MBS", 500, 5.5, "mbs", 30.0,
+        payment_freq=12, side="asset",
+        wac=0.055, wam_months=360, pool_age_months=0,
+        spread_to_curve=0.0175, oas=0.005, mbs_level="agency",
     )
     liab = Instrument(
         "Funding", 500, 1.0, "demand_deposit", 1 / 12,
         repricing_years=1 / 12, side="liability",
     )
-    table = ShockCprTable.from_pct_map({
-        "BASE": 6.0,
-        "PS_UP": 2.0,
-        "PS_DOWN": 30.0,
-    })
     calc = IRRBBCalculator(
-        [mbs], [liab], tier1_capital=500, yield_curve=curve, cpr_table=table,
+        [mbs], [liab], tier1_capital=500, yield_curve=curve,
     )
     up = SCENARIO_MAP["PS_UP"]
     down = SCENARIO_MAP["PS_DOWN"]
@@ -236,8 +236,14 @@ def test_user_cpr_table_drives_eve():
     eve_down, _, _ = calc.calc_eve(down)
     assert eve_up < 0
     assert eve_down > 0
-    # Negative convexity amplified by user CPR: |up| > down
     assert abs(eve_up) > eve_down
 
     detail = calc.instrument_eve_detail(down)
-    assert "30.0%" in str(detail.iloc[0]["cpr_shocked"])
+    assert "(OA)" in str(detail.iloc[0]["cpr_shocked"])
+    # ShockCprTable must not freeze OA schedules
+    from src.prepayment import ShockCprTable
+    table = ShockCprTable.from_pct_map({"BASE": 6.0, "PS_UP": 2.0, "PS_DOWN": 30.0})
+    calc2 = IRRBBCalculator(
+        [mbs], [liab], tier1_capital=500, yield_curve=curve, cpr_table=table,
+    )
+    assert abs(calc2.calc_eve(down)[0] - eve_down) < 1e-6

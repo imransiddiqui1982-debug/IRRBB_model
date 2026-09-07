@@ -30,8 +30,10 @@ Instrument types supported
     amortising      : fixed-rate amortising loan (equal principal)
                       principal paid evenly each period + declining coupons;
                       optional CPR prepayment accelerates principal
-    mbs             : mortgage-backed security (pass-through) — amortising
-                      schedule with CPR always enabled (user or S-curve)
+    mbs             : mortgage-backed security (pass-through) — option-adjusted
+                      CPR from curve anchor (live Steps A/B/C)
+    whole_loan      : residential whole-loan pool — same prepay math as MBS,
+                      but never HQLA; carries credit_spread placeholder
     demand_deposit  : non-maturity deposit (NMD) — modelled as single
                       cash flow at behavioural repricing tenor
 """
@@ -54,10 +56,11 @@ InstrumentType = Literal[
     "bullet_floating",
     "amortising",
     "mbs",
+    "whole_loan",
     "demand_deposit",
 ]
 
-PREPAYABLE_TYPES = frozenset({"amortising", "mbs"})
+PREPAYABLE_TYPES = frozenset({"amortising", "mbs", "whole_loan"})
 
 
 @dataclass
@@ -93,6 +96,10 @@ class Instrument:
                       CPR is derived from refinance incentive vs market rate
     market_mortgage_rate : primary mortgage rate (decimal) for incentive CPR
     age_months      : loan age at t=0 for PSA seasoning
+    use_option_adjusted : live curve→CPR→CF path (default True for mbs /
+                      whole_loan / prepayable amortising)
+    wac / wam_months / anchor_tenor / spread_to_curve / oas : MBS Step A–C
+    hqla_level / nsfr_rsf_factor / credit_spread : static LCR/NSFR tags
     use_hf_chronos  : optional Chronos blend when historical_cpr provided
     historical_cpr  : optional recent monthly CPR series for HF refinement
     cashflows       : populated by generate_cashflows()
@@ -114,14 +121,30 @@ class Instrument:
     prepay_params:    PrepaymentParams | None = field(default=None, repr=False)
     mbs_level:        str = ""   # ginnie | agency | private (HQLA / NSFR)
     encumbered:       bool = False  # NSFR: encumbered >1Y → 100% RSF
+    # Option-adjusted MBS / whole-loan fields (spec)
+    use_option_adjusted: bool = True
+    wac:              float | None = None   # decimal; default coupon_pct/100
+    wam_months:       int | None = None
+    pool_age_months:  int | None = None
+    anchor_tenor:     float = 10.0
+    spread_to_curve:  float = 0.0175
+    oas:              float = 0.005
+    base_turnover:    float = 0.06
+    max_refi_cpr:     float = 0.34
+    logistic_k:       float = 2.2
+    logistic_midpoint: float = 0.60
+    seasoning_ramp_months: int = 30
+    hqla_level:       str = ""   # level_1 | level_2a | not_eligible
+    nsfr_rsf_factor:   float | None = None
+    credit_spread:    float = 0.0  # whole-loan placeholder only
     cashflows:        list[CashFlow] = field(default_factory=list, repr=False)
 
     def __post_init__(self):
         if self.repricing_years is None:
             self.repricing_years = self.maturity_years
         name_l = self.name.lower()
-        # MBS always prepays; mortgages auto-enable CPR by name
-        if self.instrument_type == "mbs":
+        # MBS / whole loans always prepays; mortgages auto-enable CPR by name
+        if self.instrument_type in ("mbs", "whole_loan"):
             self.prepay_enabled = True
         elif (
             self.instrument_type == "amortising"
@@ -132,6 +155,33 @@ class Instrument:
         if self.instrument_type == "mbs" or "mbs" in name_l:
             from .prepayment import infer_mbs_level_from_name, normalize_mbs_level
             self.mbs_level = normalize_mbs_level(self.mbs_level) or infer_mbs_level_from_name(self.name)
+        if self.pool_age_months is None:
+            self.pool_age_months = int(self.age_months or 0)
+        if self.wam_months is None:
+            self.wam_months = max(int(round(float(self.maturity_years) * 12)), 1)
+        if self.wac is None:
+            self.wac = float(self.coupon_pct) / 100.0
+        elif float(self.wac) > 1.0:
+            self.wac = float(self.wac) / 100.0
+        # Static HQLA / RSF tags (never from CPR)
+        from .mbs_pricing import hqla_from_mbs_level
+        is_wl = self.instrument_type == "whole_loan" or (
+            self.instrument_type == "amortising" and self.prepay_enabled
+            and "mbs" not in name_l
+        )
+        if not self.hqla_level:
+            self.hqla_level = hqla_from_mbs_level(self.mbs_level, is_wl)
+        if is_wl:
+            self.hqla_level = "not_eligible"
+            if self.nsfr_rsf_factor is None:
+                self.nsfr_rsf_factor = 0.65
+        elif self.nsfr_rsf_factor is None and self.instrument_type == "mbs":
+            if self.hqla_level == "level_1":
+                self.nsfr_rsf_factor = 0.05
+            elif self.hqla_level == "level_2a":
+                self.nsfr_rsf_factor = 0.15
+            else:
+                self.nsfr_rsf_factor = 0.85
         if (
             self.prepay_enabled
             and self.instrument_type in PREPAYABLE_TYPES
@@ -146,8 +196,13 @@ class Instrument:
 
     @property
     def is_prepayable(self) -> bool:
-        """True for MBS and amortising mortgages with CPR enabled."""
+        """True for MBS, whole loans, and amortising mortgages with CPR enabled."""
         return self.instrument_type in PREPAYABLE_TYPES and bool(self.prepay_enabled)
+
+    @property
+    def is_option_adjusted(self) -> bool:
+        from .mbs_pricing import is_option_adjusted_prepayable
+        return is_option_adjusted_prepayable(self)
 
     # ── Cash flow generators ──────────────────────────────────────────────────
 
@@ -156,7 +211,7 @@ class Instrument:
             return self._bullet_fixed()
         elif self.instrument_type == "bullet_floating":
             return self._bullet_floating()
-        elif self.instrument_type in ("amortising", "mbs"):
+        elif self.instrument_type in ("amortising", "mbs", "whole_loan"):
             return self._amortising()
         elif self.instrument_type == "demand_deposit":
             return self._demand_deposit()
@@ -308,13 +363,50 @@ class Instrument:
         market_mortgage_rate: float,
         cpr_override: float | None = None,
     ) -> list[CashFlow]:
-        """Regenerate cash flows under a shocked primary mortgage rate (EVE)."""
+        """Regenerate cash flows under a shocked primary mortgage rate (legacy path)."""
         if not self.is_prepayable:
             return list(self.cashflows)
         return self._amortising_with_cpr(
             market_mortgage_rate=market_mortgage_rate,
             cpr_override=cpr_override,
         )
+
+    def cashflows_under_curve(self, curve) -> list[CashFlow]:
+        """
+        Live option-adjusted schedule from ``curve`` (Steps A/B/C).
+        Must be called fresh on every curve bump — never cache across curves.
+        """
+        if not self.is_option_adjusted:
+            return list(self.cashflows)
+        from .mbs_pricing import step_c_flows_and_price, terms_from_instrument
+        res = step_c_flows_and_price(curve, terms_from_instrument(self))
+        cfs: list[CashFlow] = []
+        # Split total CF into coupon vs principal+prepay for reporting
+        monthly_coupon = float(self.wac or self.coupon_pct / 100.0) / 12.0
+        balance = float(self.notional)
+        for t, total in zip(res.times, res.cashflows):
+            interest = balance * monthly_coupon
+            # Approximate split for bucket reporting
+            prin_like = max(float(total) - interest, 0.0)
+            if interest > 1e-12:
+                cfs.append(CashFlow(float(t), interest, "coupon", years_to_bucket(float(t))))
+            if prin_like > 1e-12:
+                cfs.append(CashFlow(float(t), prin_like, "prepayment", years_to_bucket(float(t))))
+            balance = max(balance - prin_like, 0.0)
+        return cfs
+
+    def bucket_cashflows_under_curve(self, curve) -> np.ndarray:
+        if not self.is_option_adjusted:
+            return self.bucket_cashflows()
+        from .mbs_pricing import bucket_cashflows_from_terms, terms_from_instrument
+        return bucket_cashflows_from_terms(curve, terms_from_instrument(self))
+
+    def pv_under_curve(self, curve) -> float:
+        """Option-adjusted PV (includes OAS on monthly CFs)."""
+        if not self.is_option_adjusted:
+            return float(curve.pv_cashflows(self.bucket_cashflows()))
+        from .mbs_pricing import step_c_flows_and_price, terms_from_instrument
+        return float(step_c_flows_and_price(curve, terms_from_instrument(self)).price)
 
     def bucket_cashflows_under_market_rate(
         self,
@@ -326,10 +418,30 @@ class Instrument:
             result[cf.bucket] += cf.amount
         return result
 
+    def contractual_principal_within_years(self, horizon_years: float) -> float:
+        """
+        Contractual scheduled principal only (no CPR) — for LCR/NSFR.
+        """
+        if self.instrument_type not in ("amortising", "mbs", "whole_loan"):
+            # bullets: full notional if maturity within horizon
+            if self.maturity_years <= horizon_years + 1e-9:
+                return float(self.notional)
+            return 0.0
+        period = 1.0 / max(self.payment_freq, 1)
+        n_periods = max(round(self.maturity_years * self.payment_freq), 1)
+        scheduled = self.notional / n_periods
+        total = 0.0
+        for i in range(1, n_periods + 1):
+            t = i * period
+            if t > horizon_years + 1e-9:
+                break
+            total += scheduled
+        return float(min(total, self.notional))
+
     def principal_within_years(self, horizon_years: float) -> float:
         """
         Scheduled + prepaid principal returned within ``horizon_years``.
-        Used for LCR 30-day inflows and NSFR residual maturity proxies.
+        Used for behavioural analytics; LCR uses contractual_principal_within_years.
         """
         total = 0.0
         for cf in self.cashflows:
@@ -353,6 +465,10 @@ class Instrument:
         if total <= 0:
             return float(self.maturity_years)
         return sum(t * a for t, a in prin) / total
+
+    def contractual_residual_maturity_years(self) -> float:
+        """Contractual residual maturity for LCR/NSFR (never CPR-adjusted)."""
+        return max(float(self.maturity_years), float(self.repricing_years or 0.0))
 
     def _demand_deposit(self) -> list[CashFlow]:
         """

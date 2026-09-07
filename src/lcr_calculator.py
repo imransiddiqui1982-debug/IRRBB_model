@@ -79,10 +79,10 @@ def _classify_hqla(instrument: Instrument) -> str | None:
     """
     Map an asset to HQLA level, or None if not HQLA-eligible.
 
-    MBS taxonomy (CSV ``mbs_level``):
-      ginnie  → Level 1 (0% haircut) — Ginnie Mae / full faith and credit
-      agency  → Level 2A (15% haircut) — Fannie / Freddie
-      private → not HQLA-eligible — private-label RMBS
+    Static tags only — never derived from CPR / S-curve:
+      hqla_level level_1 / ginnie  → Level 1
+      hqla_level level_2a / agency → Level 2A
+      whole_loan / not_eligible / private → not HQLA
     """
     from .prepayment import (
         MBS_LEVEL_AGENCY,
@@ -91,6 +91,19 @@ def _classify_hqla(instrument: Instrument) -> str | None:
         infer_mbs_level_from_name,
         normalize_mbs_level,
     )
+
+    # Whole loans are never HQLA (spec §1a)
+    if getattr(instrument, "instrument_type", "") == "whole_loan":
+        return None
+    hqla_tag = str(getattr(instrument, "hqla_level", "") or "").strip().lower()
+    if hqla_tag in ("not_eligible", "none", "ineligible"):
+        return None
+    if hqla_tag in ("level_1", "level1", "l1"):
+        return "level_1"
+    if hqla_tag in ("level_2a", "level2a", "l2a"):
+        return "level_2a"
+    if hqla_tag in ("level_2b", "level2b", "l2b"):
+        return "level_2b"
 
     name = instrument.name.lower()
     if any(k in name for k in ("cash", "central bank", "reserve")):
@@ -272,8 +285,8 @@ def compute_cash_inflows(assets: list[Instrument]) -> tuple[float, pd.DataFrame]
     """
     Compute 30-day cash inflows from maturing / repricing assets.
 
-    Prepayable amortising loans contribute scheduled + prepaid principal
-    returned within 30 days (CPR-aware), not the full face amount.
+    Prepayable MBS / whole loans use **contractual** scheduled principal only
+    (no CPR) — LCR/NSFR never read from the option-adjusted S-curve path.
     """
     rows = []
     total = 0.0
@@ -283,16 +296,15 @@ def compute_cash_inflows(assets: list[Instrument]) -> tuple[float, pd.DataFrame]
 
         if inst.is_prepayable:
             # Monthly mortgages/MBS pay at 1/12Y; LCR window is 30/365 ≈ 0.082Y.
-            # Prorate the first payment period into the 30-day stress window.
-            # (User shock-CPR table is EVE/NII only — LCR uses the base schedule.)
+            # Prorate the first *contractual* payment period into the 30-day window.
             period = 1.0 / max(int(inst.payment_freq), 1)
-            first_period_prin = inst.principal_within_years(period)
+            first_period_prin = inst.contractual_principal_within_years(period)
             returned = first_period_prin * min(1.0, THIRTY_DAYS / period)
             if returned <= 1e-12:
                 continue
             rate = INFLOW_PERF_LOAN
             inflow = returned * rate
-            cat = "Mortgage / MBS (30d principal)"
+            cat = "Mortgage / MBS (30d contractual principal)"
             total += inflow
             rows.append({
                 "Instrument": inst.name,

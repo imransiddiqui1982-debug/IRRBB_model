@@ -70,11 +70,11 @@ def _residual_maturity_years(inst: Instrument) -> float:
     """
     Residual maturity for NSFR ASF/RSF.
 
-    Prepayable amortising / MBS assets use principal-weighted average life (WAL)
-    on the **base** schedule only (shock CPR table does not affect NSFR).
+    Uses **contractual** residual maturity only — never CPR / WAL from the
+    option-adjusted prepayment path (BCBS NSFR + MBS spec §1a).
     """
-    if getattr(inst, "is_prepayable", False):
-        return max(inst.wal_years(), 1 / 365)
+    if hasattr(inst, "contractual_residual_maturity_years"):
+        return max(inst.contractual_residual_maturity_years(), 1 / 365)
     return max(inst.maturity_years, inst.repricing_years)
 
 
@@ -165,6 +165,24 @@ def _rsf_factor_asset(instrument: Instrument) -> tuple[float, str]:
     if encumbered and mat > ONE_YEAR:
         return RSF_ENCUMBERED, "Encumbered asset (>1Y)"
 
+    # Explicit static RSF tag on instrument (informational override from CSV)
+    rsf_tag = getattr(instrument, "nsfr_rsf_factor", None)
+    if rsf_tag is not None and getattr(instrument, "instrument_type", "") in (
+        "mbs", "whole_loan",
+    ):
+        factor = float(rsf_tag)
+        label = (
+            "Whole-loan mortgage (static RSF)"
+            if instrument.instrument_type == "whole_loan"
+            else "MBS (static RSF tag)"
+        )
+        return factor, label
+
+    if getattr(instrument, "instrument_type", "") == "whole_loan":
+        if mat >= ONE_YEAR:
+            return RSF_MORTGAGE, "Residential whole loan (≥1Y, not HQLA)"
+        return RSF_PERFORMING_LOAN, "Residential whole loan (<1Y, not HQLA)"
+
     mbs_level = normalize_mbs_level(getattr(instrument, "mbs_level", ""))
     if not mbs_level and (
         instrument.instrument_type == "mbs"
@@ -196,9 +214,9 @@ def _rsf_factor_asset(instrument: Instrument) -> tuple[float, str]:
     if hqla == "level_2b":
         return RSF_HQLA_LEVEL2B, "Level 2B HQLA"
 
-    # Whole-loan residential mortgages (not MBS)
+    # Whole-loan residential mortgages (amortising, not MBS)
     if (
-        instrument.instrument_type == "amortising"
+        instrument.instrument_type in ("amortising", "whole_loan")
         or ("mortgage" in name and "mbs" not in name and "backed" not in name)
     ):
         if mat >= ONE_YEAR:
@@ -206,7 +224,8 @@ def _rsf_factor_asset(instrument: Instrument) -> tuple[float, str]:
         return RSF_PERFORMING_LOAN, "Residential mortgage (<1Y)"
 
     if instrument.instrument_type in (
-        "bullet_fixed", "bullet_floating", "amortising", "mbs", "demand_deposit",
+        "bullet_fixed", "bullet_floating", "amortising", "mbs", "whole_loan",
+        "demand_deposit",
     ):
         if mat >= ONE_YEAR:
             return RSF_PERFORMING_LOAN, "Other loan / bond (≥1Y)"
