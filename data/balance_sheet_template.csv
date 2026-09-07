@@ -7,6 +7,7 @@ Fixed Gov Bonds (2Y),asset,200,4.1,bullet_fixed,2.0,2,2.0,0,,,,,
 "Fixed Retail Loans (4Y, amortising)",asset,250,5.8,amortising,4.0,12,4.0,0,,,,,
 Fixed Gov Bonds (5Y),asset,300,3.95,bullet_fixed,5.0,2,5.0,0,,,,,
 "Fixed-Rate Mortgages (10Y, amortising)",asset,500,5.2,amortising,10.0,12,10.0,1,,24,,,0
+"Fixed-Rate Mortgages (30Y, amortising)",asset,100,5.5,amortising,30.0,12,30.0,1,,36,,,0
 Ginnie Mae MBS Pass-Through,asset,150,4.5,mbs,15.0,12,15.0,1,,36,,ginnie,0
 "Fannie/Freddie Agency MBS",asset,150,4.8,mbs,15.0,12,15.0,1,,36,,agency,0
 Fixed Gov Bonds (15Y),asset,200,3.5,bullet_fixed,15.0,2,15.0,0,,,,,
