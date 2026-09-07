@@ -38,12 +38,35 @@ from src.scenarios import SCENARIOS, REF_LABELS  # noqa: E402
 from src.time_buckets import BUCKET_LABELS, N_BUCKETS  # noqa: E402
 from src.yield_curve import YieldCurve  # noqa: E402
 
+# Import after core modules; capture full traceback for Streamlit Cloud logs/UI
+_CPR_IMPORT_ERROR: str | None = None
+try:
+    from src.cpr_calibration import (  # noqa: E402
+        CprCalibrationInputs,
+        calibrate_scenario_cprs,
+        calibration_display_frame,
+        calibration_to_cpr_maps,
+        format_refi_incentive_bp,
+        incentive_bp,
+        scurve_dataframe,
+        scurve_display_frame,
+        historical_regimes_dataframe,
+    )
+except Exception:  # pragma: no cover - Cloud diagnostics
+    import traceback
+    _CPR_IMPORT_ERROR = traceback.format_exc()
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="IRRBB Model — BCBS 368",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+if _CPR_IMPORT_ERROR:
+    st.error("Failed to import src.cpr_calibration (full traceback below).")
+    st.code(_CPR_IMPORT_ERROR)
+    st.stop()
 
 # ── Colour palette — light institutional theme ────────────────────────────────
 BG        = "#f5f6fa"
@@ -383,22 +406,10 @@ with st.sidebar:
     st.markdown("<p class='section-label'>Mortgage / MBS CPR (S-curve)</p>",
                 unsafe_allow_html=True)
     st.caption(
-        "EVE / KR01 use **live** option-adjusted pricing (curve anchor → refi "
-        "incentive → monthly CPR → CFs) from each pool’s WAC / spread / aging in "
+        "EVE / KR01 use **live** option-adjusted pricing (curve anchor -> refi "
+        "incentive -> monthly CPR -> CFs) from each pool's WAC / spread / aging in "
         "the balance sheet. Sidebar WAC + PMMS drive the **diagnostic** S-curve "
         "table below (reporting). LCR/NSFR use contractual maturity only — never CPR."
-    )
-
-    from src.cpr_calibration import (
-        CprCalibrationInputs,
-        calibrate_scenario_cprs,
-        calibration_display_frame,
-        calibration_to_cpr_maps,
-        format_refi_incentive_bp,
-        incentive_bp,
-        scurve_dataframe,
-        scurve_display_frame,
-        historical_regimes_dataframe,
     )
 
     cal_wac = st.number_input(
@@ -424,7 +435,7 @@ with st.sidebar:
         horizontal=True,
         key="cpr_apply_speed",
         help=(
-            "Both are read off the S-curve at each scenario’s refi incentive. "
+            "Both are read off the S-curve at each scenario's refi incentive. "
             "CPR % = annual constant prepayment; PSA % = PSA multiple at seasoning."
         ),
     )
@@ -435,7 +446,7 @@ with st.sidebar:
         f"<span style='color:{DIM}'>Base refi incentive</span> "
         f"<b style='color:{GREEN if _base_inc > 0 else (RED if _base_inc < 0 else DIM)}'>"
         f"{format_refi_incentive_bp(_base_inc)}</b>"
-        f"<span style='color:{DIM}'> = WAC {cal_wac:.2f}% − PMMS {cal_pmms:.2f}%</span>"
+        f"<span style='color:{DIM}'> = WAC {cal_wac:.2f}% - PMMS {cal_pmms:.2f}%</span>"
         f"</div>",
         unsafe_allow_html=True,
     )

@@ -10,13 +10,13 @@ Critical invariant: cash flows and price are ALWAYS re-derived from the
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
 import pandas as pd
 
-from .time_buckets import BUCKET_MIDPOINTS, N_BUCKETS, years_to_bucket
+from .time_buckets import N_BUCKETS, years_to_bucket
 from .yield_curve import YieldCurve
 
 

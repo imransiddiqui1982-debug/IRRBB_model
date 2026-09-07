@@ -12,6 +12,8 @@ shock vector supplied for this engine (not the raw BCBS Annex 2 Table 1
 magnitudes at O/N–20Y).
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
