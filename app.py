@@ -9,6 +9,7 @@ Run:  streamlit run app.py
 
 import io
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -21,7 +22,7 @@ import streamlit as st  # noqa: E402
 from src.balance_sheet import get_instruments  # noqa: E402
 from src.load_balance_sheet import load_instruments_from_csv  # noqa: E402
 from src.nmd_refinement import refine_nmd_deposits, merge_nmd_into_balance_sheet, load_customer_nmd  # noqa: E402
-from src.calculator import IRRBBCalculator, suggest_irs_hedges  # noqa: E402
+from src.calculator import IRRBBCalculator  # noqa: E402
 from src.key_rate_duration import (  # noqa: E402
     build_treasury_alco_pack,
     designate_key_rate_hedges,
@@ -88,6 +89,99 @@ def _is_retail_deposit(name: str) -> bool:
         "/ wholesale", "sticky", "savings",
     )
     return any(k in n for k in keys)
+
+
+def _with_total_row(
+    df: pd.DataFrame,
+    *,
+    label: str = "Total",
+    sum_cols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Append a bottom Total row summing additive numeric columns."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    if out.index.name is not None:
+        out = out.reset_index()
+
+    amount_hint = re.compile(
+        r"\$M|notional|balance_mb|\bbalance\b|hqla value|"
+        r"asf \(\$|rsf \(\$|outflow \(\$|inflow \(\$|customers|pct_of_core|"
+        r"\basset\b|\bliability\b|\bnet\b|kr01",
+        re.I,
+    )
+    skip = re.compile(
+        r"(?:rate|beta|wal|coupon|duration|repricing|factor|haircut|"
+        r"years?|pass|disclosure|%|pct|percent)",
+        re.I,
+    )
+
+    if sum_cols is None:
+        sum_cols = []
+        for c in out.columns:
+            name = str(c)
+            series = pd.to_numeric(out[c], errors="coerce")
+            if series.notna().sum() == 0:
+                continue
+            if amount_hint.search(name):
+                sum_cols.append(c)
+                continue
+            if skip.search(name):
+                continue
+            sum_cols.append(c)
+
+    row: dict = {}
+    labeled = False
+    for c in out.columns:
+        if c in sum_cols:
+            total = float(pd.to_numeric(out[c], errors="coerce").fillna(0).sum())
+            row[c] = round(total, 4) if abs(total) < 1 else round(total, 2)
+        elif not labeled and (
+            out[c].dtype == object
+            or pd.api.types.is_string_dtype(out[c])
+            or str(c).lower() in (
+                "bucket", "segment", "instrument", "metric", "item",
+                "category", "line", "source", "label", "key",
+            )
+        ):
+            row[c] = label
+            labeled = True
+        else:
+            row[c] = ""
+    if not labeled and len(out.columns):
+        row[out.columns[0]] = label
+    return pd.concat([out, pd.DataFrame([row])], ignore_index=True)
+
+
+def _sum_row_after(
+    df: pd.DataFrame,
+    after: str = "10Y",
+    *,
+    label: str = "Total",
+) -> pd.DataFrame:
+    """Insert a numeric sum row immediately after ``after`` (e.g. after 10Y)."""
+    if df is None or df.empty or after not in df.index:
+        return _with_total_row(df, label=label)
+    out = df.copy()
+    skip_tok = ("predicted", "actual", "convexity", "total")
+    keys = [i for i in out.index if not any(t in str(i).lower() for t in skip_tok)]
+    # Sum key rows up to and including ``after``
+    sum_keys = []
+    for k in keys:
+        sum_keys.append(k)
+        if k == after:
+            break
+    if not sum_keys:
+        return out
+    total = out.loc[sum_keys].apply(pd.to_numeric, errors="coerce").fillna(0).sum()
+    total.name = label
+    # Rebuild: rows through ``after``, then Total, then remaining
+    head = list(out.index)
+    pos = head.index(after)
+    parts = [out.iloc[: pos + 1], total.to_frame().T]
+    if pos + 1 < len(out):
+        parts.append(out.iloc[pos + 1 :])
+    return pd.concat(parts)
 
 
 def _filter_non_deposit_eve(detail: pd.DataFrame) -> pd.DataFrame:
@@ -642,30 +736,27 @@ with tab0:
 
         st.markdown("**By segment (BCBS 368 caps applied)**")
         if nmd_result.segment_summary is not None and not nmd_result.segment_summary.empty:
-            st.dataframe(nmd_result.segment_summary, use_container_width=True, hide_index=True)
+            st.dataframe(
+                _with_total_row(nmd_result.segment_summary),
+                use_container_width=True,
+                hide_index=True,
+            )
 
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.markdown("**Portfolio refinement summary**")
-            st.dataframe(nmd_result.summary, use_container_width=True, hide_index=True)
-        with col_b:
-            st.markdown("**Core deposit IRRBB buckets**")
-            st.dataframe(nmd_result.irrbb_buckets, use_container_width=True)
-
-        st.markdown("**IRRBB liability instruments created from NMD**")
-        nmd_inst_rows = [{
-            "Instrument": i.name,
-            "Notional ($M)": i.notional,
-            "Coupon (%)": i.coupon_pct,
-            "Type": i.instrument_type,
-            "Repricing (Y)": round(i.repricing_years, 3),
-            "Eff. Duration (Y)": round(i.effective_duration, 2),
-        } for i in nmd_result.instruments]
-        st.dataframe(pd.DataFrame(nmd_inst_rows), use_container_width=True, hide_index=True)
+        st.markdown("**Portfolio refinement summary**")
+        st.caption(
+            "Includes historical and long-run runoff / decay rates. "
+            "Core sticky balance feeds IRRBB as WAL-based demand deposits "
+            "(tenor bucket display removed — not used in EVE/NII pricing)."
+        )
+        st.dataframe(nmd_result.summary, use_container_width=True, hide_index=True)
 
         if nmd_result.liquidity_summary is not None and not nmd_result.liquidity_summary.empty:
             st.markdown("**LCR / NSFR bifurcation map (from deposit file)**")
-            st.dataframe(nmd_result.liquidity_summary, use_container_width=True, hide_index=True)
+            st.dataframe(
+                _with_total_row(nmd_result.liquidity_summary),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 # ── TAB LCR / NSFR: Liquidity ratios ──────────────────────────────────────────
@@ -724,17 +815,29 @@ with tab_lcr:
     with col_h:
         st.markdown("**HQLA breakdown**")
         if not lcr_result.hqla_breakdown.empty:
-            st.dataframe(lcr_result.hqla_breakdown, use_container_width=True, hide_index=True)
+            st.dataframe(
+                _with_total_row(lcr_result.hqla_breakdown),
+                use_container_width=True,
+                hide_index=True,
+            )
         else:
             st.warning("No HQLA-eligible assets identified.")
     with col_o:
         st.markdown("**30-day cash outflows**")
         if not lcr_result.outflow_breakdown.empty:
-            st.dataframe(lcr_result.outflow_breakdown, use_container_width=True, hide_index=True)
+            st.dataframe(
+                _with_total_row(lcr_result.outflow_breakdown),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     if not lcr_result.inflow_breakdown.empty:
         st.markdown("**30-day cash inflows (before 75% cap)**")
-        st.dataframe(lcr_result.inflow_breakdown, use_container_width=True, hide_index=True)
+        st.dataframe(
+            _with_total_row(lcr_result.inflow_breakdown),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     st.divider()
     st.markdown("<p class='section-label'>Net Stable Funding Ratio (NSFR)</p>",
@@ -772,10 +875,18 @@ with tab_lcr:
     col_asf, col_rsf = st.columns(2)
     with col_asf:
         st.markdown("**ASF breakdown (funding sources)**")
-        st.dataframe(nsfr_result.asf_breakdown, use_container_width=True, hide_index=True)
+        st.dataframe(
+            _with_total_row(nsfr_result.asf_breakdown),
+            use_container_width=True,
+            hide_index=True,
+        )
     with col_rsf:
         st.markdown("**RSF breakdown (asset requirements)**")
-        st.dataframe(nsfr_result.rsf_breakdown, use_container_width=True, hide_index=True)
+        st.dataframe(
+            _with_total_row(nsfr_result.rsf_breakdown),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     st.download_button(
         "⬇ Download Liquidity Ratios CSV",
@@ -1212,83 +1323,28 @@ with tab5:
     col_t1, col_t2 = st.columns(2)
     with col_t1:
         st.markdown("**DV01 summary by bucket ($K/bp)**")
-        st.dataframe(
-            dv01_k[["asset_dv01_k", "liability_dv01_k", "net_dv01_k"]]
-            .rename(columns={
+        _dv01_tbl = dv01_k[["asset_dv01_k", "liability_dv01_k", "net_dv01_k"]].rename(
+            columns={
                 "asset_dv01_k": "Asset ($K/bp)",
                 "liability_dv01_k": "Liability ($K/bp)",
                 "net_dv01_k": "Net ($K/bp)",
-            })
-            .style.format({
-                "Asset ($K/bp)": "{:,.1f}",
-                "Liability ($K/bp)": "{:,.1f}",
-                "Net ($K/bp)": "{:+,.1f}",
-            })
-            .background_gradient(subset=["Net ($K/bp)"], cmap="RdYlGn"),
+            }
+        )
+        st.dataframe(
+            _with_total_row(_dv01_tbl),
             use_container_width=True,
             height=360,
+            hide_index=True,
         )
     with col_t2:
         st.markdown("**Maturity notional gap ($M) — aligns with DV01**")
         st.caption("Principal + repricing cash flows only (no coupon double-count).")
         st.dataframe(
-            maturity_gap.style.format({
-                "assets": "{:.1f}",
-                "liabilities": "{:.1f}",
-                "net_gap": "{:+.1f}",
-            }),
+            _with_total_row(maturity_gap),
             use_container_width=True,
             height=360,
+            hide_index=True,
         )
-
-    with st.expander("Why can notional gap and DV01 gap disagree? (e.g. 6M–9M bucket)"):
-        st.markdown(
-            f"""
-The **legacy BCBS notional gap** (left reference table if shown separately) counts the
-**full face value** of any instrument that has **any** cash flow in a bucket — including
-**coupon-only** payments. Long-dated fixed bonds and mortgages therefore inflate asset
-notional in intermediate buckets even when almost no principal matures there.
-
-**DV01** and the **maturity notional gap** only use **principal and repricing** flows,
-weighted by tenor (and discount factor for DV01).
-
-**Example in your book (6M–9M):**
-- Assets: gov bonds and mortgages appear in the notional gap because they **pay coupons**
-  in this window, but contribute only **~\\$36M** of actual principal vs **\\$2,050M**
-  counted under the legacy rule.
-- Liabilities: **\\$300M** floating senior debt **reprices entirely** in this bucket,
-  plus term deposits with **\\$104M** maturing — concentrated rate-sensitive outflows →
-  **higher liability DV01** despite a smaller legacy notional total.
-
-**Rule of thumb:** trust **DV01 / maturity notional** for hedging; use the legacy gap
-only as a BCBS slotting diagnostic.
-            """
-        )
-
-    col_ref1, col_ref2 = st.columns(2)
-    with col_ref1:
-        st.markdown("**Legacy BCBS notional gap ($M)**")
-        st.caption("Full instrument notional if any cash flow hits bucket.")
-        st.dataframe(
-            gap.style.format({
-                "assets": "{:.1f}",
-                "liabilities": "{:.1f}",
-                "net_gap": "{:+.1f}",
-            }),
-            use_container_width=True,
-            height=280,
-        )
-    with col_ref2:
-        st.markdown("**6M–9M bucket comparison**")
-        _b6 = "6M – 9M"
-        if _b6 in gap.index:
-            st.table(pd.DataFrame([
-                {"Measure": "Legacy net gap ($M)", "Value": f"{gap.loc[_b6, 'net_gap']:+.1f}"},
-                {"Measure": "Maturity net gap ($M)", "Value": f"{maturity_gap.loc[_b6, 'net_gap']:+.1f}"},
-                {"Measure": "Net DV01 ($K/bp)", "Value": f"{dv01_k.loc[_b6, 'net_dv01_k']:+,.1f}"},
-            ]))
-        else:
-            st.caption("Bucket label not found in current gap table.")
 
     net_dv01_k = dv01_k["net_dv01_k"]
     asset_heavy = net_dv01_k[net_dv01_k > 0].index.tolist()
@@ -1304,65 +1360,7 @@ only as a BCBS slotting diagnostic.
             f"{'…' if len(liab_heavy) > 5 else ''}"
         )
 
-    st.divider()
-    st.markdown("<p class='section-label'>IRS hedging strategies to close the DV01 gap</p>",
-                unsafe_allow_html=True)
-    hedge_ratio = st.slider(
-        "Target hedge ratio (%)",
-        min_value=50, max_value=100, value=80, step=5,
-        help="Share of bucket |net DV01| to neutralise with swaps.",
-    ) / 100.0
-    hedge_df = suggest_irs_hedges(dv01_gap, hedge_ratio=hedge_ratio)
-
-    st.markdown(
-        f"<div style='font-size:12px;color:{DIM};line-height:1.7;margin-bottom:12px'>"
-        f"<strong>How to read:</strong> A <em>receiver</em> swap (receive-fixed / pay-floating) "
-        f"adds asset-like DV01 in the bucket — use when liabilities dominate (negative net). "
-        f"A <em>payer</em> swap (pay-fixed / receive-floating) offsets asset-heavy buckets. "
-        f"Match swap tenor to the BCBS bucket midpoint. "
-        f"Indicative notional uses DV01 ≈ N × tenor × 0.01bp.</div>",
-        unsafe_allow_html=True,
-    )
-
-    if hedge_df.empty:
-        st.info("No material DV01 gaps — book is approximately balanced by bucket.")
-    else:
-        st.dataframe(hedge_df, use_container_width=True, hide_index=True)
-
-        st.markdown("**Portfolio-level playbook**")
-        if total_net_k > 0:
-            st.markdown(
-                f"- **Overall asset-heavy** (net **${total_net_k:,.0f}K/bp**): "
-                "layer **pay-fixed** swaps at 2Y–5Y to reduce rate-rise sensitivity; "
-                "consider **receive-floating** on short-end to retain NII if cuts are expected."
-            )
-        elif total_net_k < 0:
-            st.markdown(
-                f"- **Overall liability-heavy** (net **${total_net_k:,.0f}K/bp**): "
-                "add **receive-fixed** swaps at buckets with largest negative net DV01 "
-                "(deposits / short funding); match tenor to behavioural repricing WAL."
-            )
-        else:
-            st.markdown("- **Near flat** at portfolio level — focus on bucket-level mismatches above.")
-
-        st.markdown(
-            "- **Steepener / flattener risk**: if short-end net ≠ long-end net, use a "
-            "**swap ladder** (O/N–1Y payer + 5Y–10Y receiver) rather than a single bullet.\n"
-            "- **Basis & credit**: index selection (SOFR vs Fed Funds) and CSA terms affect "
-            "effective hedge ratio — recalibrate after execution.\n"
-            "- **IRRBB interaction**: re-run EVE/NII scenarios after adding swap notionals "
-            "to confirm outlier thresholds remain inside policy."
-        )
-
-        st.download_button(
-            "⬇ Download IRS hedge suggestions CSV",
-            hedge_df.to_csv(index=False),
-            file_name="irs_hedge_suggestions.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-
-    export_gap = dv01_k.join(gap, rsuffix="_notional_m")
+    export_gap = dv01_k.join(maturity_gap, rsuffix="_maturity_m")
     st.download_button(
         "⬇ Download DV01 Gap CSV", export_gap.to_csv(),
         file_name="repricing_gap_dv01.csv", mime="text/csv",
@@ -1530,17 +1528,17 @@ with tab_kr:
         st.plotly_chart(fig_kr, use_container_width=True)
 
         st.markdown("**Step 1 — Base KR01 report ($K/bp)**")
+        _kr01_step1 = kr01_df.set_index("label")[
+            ["asset_kr01_k", "liability_kr01_k", "net_kr01_k"]
+        ].rename(columns={
+            "asset_kr01_k": "Asset",
+            "liability_kr01_k": "Liability",
+            "net_kr01_k": "Net KR01",
+        })
         st.dataframe(
-            kr01_df.set_index("label")[
-                ["asset_kr01_k", "liability_kr01_k", "net_kr01_k"]
-            ].rename(columns={
-                "asset_kr01_k": "Asset",
-                "liability_kr01_k": "Liability",
-                "net_kr01_k": "Net KR01",
-            }).style.format({
-                "Asset": "{:,.1f}", "Liability": "{:,.1f}", "Net KR01": "{:+,.1f}",
-            }),
+            _with_total_row(_kr01_step1),
             use_container_width=True,
+            hide_index=True,
         )
 
         st.markdown("**Step 2 — Shock at each key (bp)**")
@@ -1553,24 +1551,27 @@ with tab_kr:
             "**Step 3 — Attribution matrix ($M)**  ·  "
             "cell = −KR01_base × shock_bp / 1000"
         )
+        _attr = _sum_row_after(pack["attribution"], after="10Y", label="Total (1Y–10Y)")
         st.dataframe(
-            pack["attribution"].style.format("{:+.2f}"),
+            _attr.style.format("{:+.2f}"),
             use_container_width=True,
         )
         st.caption(
             "Predicted key cells use **Base KR01 only** × rate shocks. "
             "MBS / whole-loan Actual ΔEVE and Dynamic KR01 re-derive CPR from each "
-            "instrument’s balance-sheet WAC on the shocked curve."
+            "instrument’s balance-sheet WAC on the shocked curve. "
+            "**Total (1Y–10Y)** sums key rows after the 10Y bucket."
         )
 
         st.markdown("**Dynamic KR01 under each BCBS shock ($K/bp net)**")
         st.caption(
             "Recomputed on the shocked curve; OA pools reprice with live CPR from "
-            "balance-sheet WAC (not a sidebar CPR/PSA table)."
+            "balance-sheet WAC. Total row = sum across keys."
         )
         st.dataframe(
-            pack["scenario_kr01"].style.format("{:+,.1f}"),
+            _with_total_row(pack["scenario_kr01"]),
             use_container_width=True,
+            hide_index=True,
         )
         fig_sk = go.Figure()
         sk = pack["scenario_kr01"]
@@ -1591,6 +1592,134 @@ with tab_kr:
             ),
         )
         st.plotly_chart(fig_sk, use_container_width=True)
+
+        # ── Mortgage S-curve / CPR–PSA reference (page body, not sidebar) ─────
+        st.divider()
+        st.markdown(
+            "<p class='section-label'>Mortgage S-curve — CPR &amp; PSA reference</p>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            """
+**How CPR and PSA are calculated (reference)**
+
+1. **Refi incentive (bp)** = \\((\\mathrm{WAC} - \\mathrm{mortgage\\ rate}) \\times 100\\).
+   Positive = in-the-money to refinance; negative = lock-in.
+2. **CPR %** is read from the agency-style **S-curve** (incentive → annual CPR),
+   optionally blended with a logistic S-curve between knots.
+3. **PSA %** converts CPR at a seasoning age:
+   at age ≥ 30 months, \\(100\\%\\ \\mathrm{PSA} = 6\\%\\ \\mathrm{CPR}\\), so
+   \\(\\mathrm{PSA\\%} \\approx \\mathrm{CPR\\%} / 6 \\times 100\\).
+4. **Live EVE / KR01** for MBS and whole loans do **not** use a portfolio sidebar speed.
+   Each pool uses its **balance-sheet WAC**, curve anchor + spread → mortgage rate →
+   logistic CPR × seasoning (Steps A→B→C). Tables below are ALCO documentation /
+   scenario mapping, not an override of pricing.
+            """
+        )
+
+        from src.cpr_calibration import (
+            CprCalibrationInputs,
+            calibrate_scenario_cprs,
+            calibration_display_frame,
+            scurve_dataframe,
+            scurve_display_frame,
+            historical_regimes_dataframe,
+            format_refi_incentive_bp,
+            incentive_bp,
+        )
+
+        _oa = [a for a in assets if getattr(a, "is_option_adjusted", False)]
+        if _oa:
+            _w_not = sum(max(float(a.notional), 0.0) for a in _oa) or 1.0
+            _wac_dec = sum(
+                float(getattr(a, "wac", 0.0) or 0.0) * max(float(a.notional), 0.0)
+                for a in _oa
+            ) / _w_not
+            _wac_pct = _wac_dec * 100.0 if _wac_dec <= 1.0 else _wac_dec
+            _ages = [
+                int(
+                    getattr(a, "age_months", None)
+                    or getattr(a, "pool_age_months", None)
+                    or 30
+                )
+                for a in _oa
+            ]
+            _age = int(round(sum(_ages) / len(_ages)))
+            _top = max(_oa, key=lambda a: float(a.notional))
+            _anchor = float(getattr(_top, "anchor_tenor", 7.0) or 7.0)
+            _spread = float(getattr(_top, "spread_to_curve", 0.0) or 0.0)
+            _mtg_dec = float(curve.rate(_anchor)) + _spread
+            _pmms_pct = _mtg_dec * 100.0 if _mtg_dec <= 1.0 else _mtg_dec
+        else:
+            _wac_pct, _pmms_pct, _age = 5.50, 6.50, 30
+
+        _inc0 = incentive_bp(_wac_pct, _pmms_pct)
+        st.caption(
+            f"Reference inputs from OA book (balance-sheet WAC / curve+spread): "
+            f"WAC **{_wac_pct:.2f}%**, mortgage rate **{_pmms_pct:.2f}%**, "
+            f"seasoning **{_age}** mo → base refi incentive "
+            f"**{format_refi_incentive_bp(_inc0)}**."
+        )
+
+        _calib = calibrate_scenario_cprs(
+            CprCalibrationInputs(
+                wac_pct=float(_wac_pct),
+                pmms_pct=float(_pmms_pct),
+                age_months=int(_age),
+            )
+        )
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            st.markdown("**S-curve knots (refi incentive → CPR %)**")
+            st.dataframe(
+                scurve_display_frame()[["Refi incentive", "CPR %"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        with sc2:
+            st.markdown("**BASE + BCBS scenario CPR / PSA (from S-curve)**")
+            st.dataframe(
+                calibration_display_frame(_calib),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        _sc = scurve_dataframe()
+        fig_sc = go.Figure()
+        fig_sc.add_trace(go.Scatter(
+            x=_sc["incentive_bp"], y=_sc["cpr_pct"],
+            mode="lines+markers", name="Agency-style S-curve",
+            line=dict(color=NAVY, width=2.5),
+        ))
+        fig_sc.add_trace(go.Scatter(
+            x=_calib["incentive_bp"], y=_calib["cpr_pct"],
+            mode="markers+text", name="WAC / mortgage → scenarios",
+            text=_calib["key"], textposition="top center",
+            marker=dict(size=10, color=ORANGE),
+            customdata=_calib["refi_incentive"],
+            hovertemplate=(
+                "%{text}<br>Refi incentive: %{customdata}<br>"
+                "CPR: %{y:.1f}%<extra></extra>"
+            ),
+        ))
+        fig_sc.add_vline(x=0, line_dash="dot", line_color=BORDER)
+        fig_sc.update_layout(
+            **PLOTLY_BASE, height=340,
+            xaxis=dict(
+                **AXIS_STYLE,
+                title="Refi incentive (WAC − mtg), bp  (+ ITM / − OTM)",
+            ),
+            yaxis=dict(**AXIS_STYLE, title="CPR %"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, bgcolor=BG2),
+        )
+        st.plotly_chart(fig_sc, use_container_width=True)
+
+        with st.expander("Historical regimes (ALCO relevance)"):
+            st.dataframe(
+                historical_regimes_dataframe(),
+                use_container_width=True,
+                hide_index=True,
+            )
 
         with st.expander("▼ Instrument KR01 attribution"):
             attr = instrument_kr01_attribution(

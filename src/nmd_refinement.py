@@ -869,6 +869,21 @@ def refine_nmd_deposits(
     )
     buckets = _build_irrbb_buckets(portfolio_runoff["profile"], core_mb) if core_mb > 0 else pd.DataFrame()
 
+    seed_monthly = float(portfolio_runoff["seed_rate"])
+    profile_rates = np.asarray(portfolio_runoff["profile"]["runoff_rates"], dtype=float)
+    n_hist_hazards = int(min(24, len(hazard))) if len(hazard) else 0
+    hist_monthly = (
+        float(np.mean(profile_rates[:n_hist_hazards]))
+        if n_hist_hazards > 0
+        else float("nan")
+    )
+    seed_annual_pct = (1.0 - (1.0 - seed_monthly) ** 12) * 100.0
+    hist_annual_pct = (
+        (1.0 - (1.0 - hist_monthly) ** 12) * 100.0
+        if np.isfinite(hist_monthly)
+        else float("nan")
+    )
+
     liquidity_summary = _build_liquidity_summary(segment_results, term_instruments)
 
     segment_summary = pd.DataFrame([{
@@ -885,7 +900,7 @@ def refine_nmd_deposits(
         "Deposit Rate (%)": round(s.avg_deposit_rate_pct, 4),
     } for s in segment_results])
 
-    summary = pd.DataFrame([
+    summary_rows = [
         {"Metric": "Customers", "Value": len(cust)},
         {"Metric": "Months of history", "Value": len(month_cols)},
         {"Metric": "Latest balance (USD M)", "Value": round(total_bal, 2)},
@@ -900,7 +915,28 @@ def refine_nmd_deposits(
         {"Metric": "Non-core balance (USD M)", "Value": round(non_core_mb, 2)},
         {"Metric": "Term deposit instruments", "Value": len(term_instruments)},
         {"Metric": "Behavioural WAL (years)", "Value": round(wal_years, 2)},
-    ])
+        {
+            "Metric": "Hist. avg monthly runoff / decay (%)",
+            "Value": round(hist_monthly * 100.0, 4) if np.isfinite(hist_monthly) else "n/a",
+        },
+        {
+            "Metric": "Hist. avg annualized runoff (%)",
+            "Value": round(hist_annual_pct, 2) if np.isfinite(hist_annual_pct) else "n/a",
+        },
+        {
+            "Metric": "Long-run monthly runoff / decay (%)",
+            "Value": round(seed_monthly * 100.0, 4),
+        },
+        {
+            "Metric": "Long-run annualized runoff (%)",
+            "Value": round(seed_annual_pct, 2),
+        },
+        {
+            "Metric": "Historical hazard months in profile",
+            "Value": n_hist_hazards,
+        },
+    ]
+    summary = pd.DataFrame(summary_rows)
 
     return NmdRefinementResult(
         deposit_name=deposit_name,

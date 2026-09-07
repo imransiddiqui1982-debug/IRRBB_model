@@ -28,6 +28,9 @@ def test_refine_customer_level_excel():
     assert result.wal_years > 0
     assert len(result.instruments) >= 1
     assert not result.segment_summary.empty
+    metrics = set(result.summary["Metric"].astype(str))
+    assert "Long-run monthly runoff / decay (%)" in metrics
+    assert "Hist. avg monthly runoff / decay (%)" in metrics
     assert abs(
         sum(i.notional for i in result.instruments) - result.latest_balance_mb
     ) < 1.0
