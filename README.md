@@ -13,7 +13,7 @@ End-to-end **Interest Rate Risk in the Banking Book (IRRBB)** engine with:
 - **Live SOFR + USD IRS mid** yield curve (optional)  
 - **DV01 gap** and indicative IRS hedge suggestions  
 - **Key rate duration (KR01)** on the tradeable 1/2/3/5/7/10Y swap grid  
-- **CPR calibration** (PMMS + WAC → S-curve → BCBS scenario CPR/PSA)  
+- **Option-adjusted MBS / whole-loan prepay** (per-instrument balance-sheet WAC)  
 
 ---
 
@@ -105,7 +105,7 @@ One row per instrument:
 
 **MBS HQLA / NSFR:** Ginnie Mae → LCR Level 1 (0% haircut), NSFR RSF 5%. Fannie/Freddie agency → LCR Level 2A (15% haircut), NSFR RSF 15%. Private-label RMBS → not HQLA; NSFR RSF ~85%. Whole-loan residential mortgages ≥1Y → RSF 65%, **never HQLA**. Encumbered >1Y → RSF 100%. Residual maturity is **contractual** (CPR never feeds LCR/NSFR).
 
-**Mortgage / MBS CPR:** Option-adjusted pricing (Steps A→B→C): curve anchor → refi incentive → monthly CPR → cash flows, re-derived on every EVE/KR01 curve bump. Balance-sheet types: `mbs` and `whole_loan`. Sidebar WAC+PMMS remains a diagnostic S-curve.
+**Mortgage / MBS CPR:** Option-adjusted pricing (Steps A→B→C): curve anchor → refi incentive → monthly CPR → cash flows, re-derived on every EVE/KR01 curve bump. Each `mbs` / `whole_loan` uses its own balance-sheet `wac`, `spread_to_curve`, and aging — no sidebar CPR/PSA overlay.
 
 **Tip:** When NMD is enabled, leave demand deposits out of the CSV (or they are replaced). Use the CSV for assets + wholesale funding only.
 
