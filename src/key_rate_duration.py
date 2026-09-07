@@ -81,11 +81,38 @@ def _bump_curve(
     key_index: int,
     bp: float = 1.0,
 ) -> YieldCurve:
-    """Return a YieldCurve with a +bp triangular bump at ``key_index``."""
+    """
+    Return a YieldCurve with a +bp triangular bump at ``key_index``.
+
+    Bumps the curve's continuous pillars (``_ref_tenors``) when available so
+    MBS Step A/C ``rate(t)`` stays consistent with the base curve. Bumping only
+    the 19 bucket midpoints and then re-binding ``rate()`` to those midpoints
+    falsely lowers some tenors vs the live pillar curve and can flip Asset KR01
+    negative under a live SOFR/IRS curve.
+    """
+    ref_t = getattr(curve, "_ref_tenors", None)
+    ref_r = getattr(curve, "_ref_rates", None)
+    if ref_t is not None and ref_r is not None and len(ref_t) >= 2:
+        tenors = np.asarray(ref_t, dtype=float)
+        rates = np.asarray(ref_r, dtype=float)
+        weights = grid.tent(tenors, key_index)
+        bumped = np.maximum(rates + weights * (bp / 10_000.0), 0.0)
+        return YieldCurve(list(tenors), list(bumped))
+
     mids = np.asarray(BUCKET_MIDPOINTS, dtype=float)
     weights = grid.tent(mids, key_index)
     bumped = np.maximum(curve.base_rates + weights * (bp / 10_000.0), 0.0)
     return _clone_curve(bumped)
+
+
+def _parallel_bump_curve(curve: YieldCurve, bp: float = 1.0) -> YieldCurve:
+    """Uniform +bp on continuous pillars (fallback: bucket rates)."""
+    ref_t = getattr(curve, "_ref_tenors", None)
+    ref_r = getattr(curve, "_ref_rates", None)
+    if ref_t is not None and ref_r is not None and len(ref_t) >= 2:
+        bumped = np.maximum(np.asarray(ref_r, dtype=float) + bp / 10_000.0, 0.0)
+        return YieldCurve(list(ref_t), list(bumped))
+    return _clone_curve(np.maximum(curve.base_rates + bp / 10_000.0, 0.0))
 
 
 def _instrument_cf_vector(
@@ -149,7 +176,7 @@ def parallel_dv01(
 
     Positive => asset-sensitive (EVE falls when rates rise).
     """
-    bumped = _clone_curve(np.maximum(curve.base_rates + 1e-4, 0.0))
+    bumped = _parallel_bump_curve(curve, bp=1.0)
     # $M PV change × 1000 = $K per bp; sign: loss when rates up => positive DV01
     return float(
         (
