@@ -494,8 +494,9 @@ with st.sidebar:
     ))
     fig_side.add_vline(x=0, line_dash="dot", line_color=BORDER)
     fig_side.update_layout(
-        **PLOTLY_BASE, height=280, margin=dict(l=10, r=10, t=30, b=10),
-        xaxis=dict(**AXIS_STYLE, title="Refi incentive (WAC−PMMS), bp  (+ ITM / − OTM)"),
+        **{**PLOTLY_BASE, "margin": dict(l=10, r=10, t=30, b=10)},
+        height=280,
+        xaxis=dict(**AXIS_STYLE, title="Refi incentive (WAC-PMMS), bp  (+ ITM / - OTM)"),
         yaxis=dict(**AXIS_STYLE, title="CPR %"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, bgcolor=BG2, font=dict(size=9)),
     )
