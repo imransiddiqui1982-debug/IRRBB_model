@@ -191,6 +191,19 @@ def test_parallel_mirrors():
     assert all(abs(u + d) < 1e-9 for u, d in zip(up.shocks_bp, down.shocks_bp))
 
 
+def test_key_tenor_shape_pillars():
+    """Short / steepener / flattener use calibrated 0.25–10Y pillars."""
+    from src.scenarios import REF_TENORS, SCENARIO_MAP
+    assert REF_TENORS == [0.25, 1.0, 2.0, 5.0, 7.0, 10.0]
+    assert SCENARIO_MAP["SHORT_UP"].ref_shocks_bp == [282, 234, 182, 86, 49, 25]
+    assert SCENARIO_MAP["SHORT_DOWN"].ref_shocks_bp == [-282, -234, -182, -86, -49, -25]
+    assert SCENARIO_MAP["STEEPENER"].ref_shocks_bp == [-175, -122, -65, 40, 76, 108]
+    assert SCENARIO_MAP["FLATTENER"].ref_shocks_bp == [220, 167, 110, 5, -29, -63]
+    # Short up/down remain mirrors at pillars
+    su, sd = SCENARIO_MAP["SHORT_UP"], SCENARIO_MAP["SHORT_DOWN"]
+    assert all(a + b == 0 for a, b in zip(su.ref_shocks_bp, sd.ref_shocks_bp))
+
+
 # ── Calculator — EVE ──────────────────────────────────────────────────────────
 
 def test_eve_zero_shock(calc):

@@ -284,16 +284,18 @@ rate sens.   = balance × stable% × beta         → short reset
 non-core     = balance × (1 − stable%)          → ~1M volatile
 ```
 
-### BCBS shock grid (bp at O/N, 1Y, 2Y, 5Y, 10Y, 20Y)
+### BCBS / key-tenor shock grid (bp at 0.25Y, 1Y, 2Y, 5Y, 7Y, 10Y)
 
-| Scenario | O/N | 1Y | 2Y | 5Y | 10Y | 20Y |
-|----------|-----|----|----|----|-----|-----|
+| Scenario | 0.25Y | 1Y | 2Y | 5Y | 7Y | 10Y |
+|----------|-------|----|----|----|----|-----|
 | Parallel Up | +200 | +200 | +200 | +200 | +200 | +200 |
 | Parallel Down | −200 | −200 | −200 | −200 | −200 | −200 |
-| Steepener | −100 | −75 | −50 | 0 | +100 | +150 |
-| Flattener | +100 | +75 | +50 | 0 | −100 | −150 |
-| Short Up | +250 | +200 | +150 | +75 | 0 | 0 |
-| Short Down | −250 | −200 | −150 | −75 | 0 | 0 |
+| Steepener | −175 | −122 | −65 | +40 | +76 | +108 |
+| Flattener | +220 | +167 | +110 | +5 | −29 | −63 |
+| Short Up | +282 | +234 | +182 | +86 | +49 | +25 |
+| Short Down | −282 | −234 | −182 | −86 | −49 | −25 |
+
+Shocks are interpolated from these pillars onto the 19 BCBS bucket midpoints for EVE/NII.
 
 ---
 

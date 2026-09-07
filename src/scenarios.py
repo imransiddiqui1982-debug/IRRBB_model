@@ -1,18 +1,15 @@
 """
 scenarios.py
 ------------
-BCBS 368 (April 2016) — Annex 2
-Six prescribed interest rate shock scenarios.
+Interest rate shock scenarios for EVE / NII.
 
-The standard defines shocks at key reference tenors (overnight, 1Y, 2Y, 5Y,
-10Y, 20Y) and requires interpolation for intermediate tenors. This module
-implements linear interpolation between reference points to produce a
-shock value for each of the 19 time bucket midpoints.
+Pillar shocks are defined on the tradeable / key-rate grid
+(0.25Y, 1Y, 2Y, 5Y, 7Y, 10Y) and linearly interpolated to the 19 BCBS
+bucket midpoints. Parallel Up / Down remain uniform ±200 bp.
 
-Reference tenors and shocks (basis points) per scenario:
-  Tenors: [O/N, 1Y, 2Y, 5Y, 10Y, 20Y] (in years)
-
-Source: BCBS 368, Annex 2, Table 1.
+Short Up / Short Down / Steepener / Flattener use the calibrated key-tenor
+shock vector supplied for this engine (not the raw BCBS Annex 2 Table 1
+magnitudes at O/N–20Y).
 """
 
 from dataclasses import dataclass, field
@@ -21,14 +18,15 @@ import pandas as pd
 from .time_buckets import BUCKET_LABELS, BUCKET_MIDPOINTS
 
 
-# Reference tenors from BCBS 368 Annex 2 Table 1 (years)
-REF_TENORS = [0.0, 1.0, 2.0, 5.0, 10.0, 20.0]
+# Key-rate / mortgage-pricing pillars (years) for scenario shock definition
+REF_TENORS = [0.25, 1.0, 2.0, 5.0, 7.0, 10.0]
+REF_LABELS = ["0.25Y", "1Y", "2Y", "5Y", "7Y", "10Y"]
 
 
 def _interpolate_shocks(ref_shocks_bp: list[int]) -> list[float]:
     """
     Linearly interpolate reference-tenor shocks to each of the 19 bucket
-    midpoints. Values beyond the last reference tenor are held flat.
+    midpoints. Values outside the pillar range are held at the nearest edge.
     """
     return list(np.interp(BUCKET_MIDPOINTS, REF_TENORS, ref_shocks_bp))
 
@@ -42,6 +40,11 @@ class Scenario:
     shocks_bp:      list[float] = field(init=False)
 
     def __post_init__(self):
+        if len(self.ref_shocks_bp) != len(REF_TENORS):
+            raise ValueError(
+                f"{self.id}: expected {len(REF_TENORS)} pillar shocks, "
+                f"got {len(self.ref_shocks_bp)}"
+            )
         self.shocks_bp = _interpolate_shocks(self.ref_shocks_bp)
 
     def shock_series(self) -> pd.Series:
@@ -51,7 +54,7 @@ class Scenario:
         return self.shocks_bp[bucket_index]
 
 
-# Six BCBS 368 scenarios — ref shocks at [O/N, 1Y, 2Y, 5Y, 10Y, 20Y] in bps
+# Pillar order: 0.25Y, 1Y, 2Y, 5Y, 7Y, 10Y (bp)
 SCENARIOS: list[Scenario] = [
     Scenario(
         id="PS_UP",   name="Parallel Shift Up",
@@ -65,23 +68,23 @@ SCENARIOS: list[Scenario] = [
     ),
     Scenario(
         id="STEEPENER", name="Steepener",
-        description="Short rates down / long rates up",
-        ref_shocks_bp=[-100, -75, -50, 0, +100, +150],
+        description="Short rates down / long rates up (key-tenor calibrated)",
+        ref_shocks_bp=[-175, -122, -65, +40, +76, +108],
     ),
     Scenario(
         id="FLATTENER", name="Flattener",
-        description="Short rates up / long rates down",
-        ref_shocks_bp=[+100, +75, +50, 0, -100, -150],
+        description="Short rates up / long rates down (key-tenor calibrated)",
+        ref_shocks_bp=[+220, +167, +110, +5, -29, -63],
     ),
     Scenario(
         id="SHORT_UP", name="Short Rates Up",
-        description="Short-end shock up, long end unchanged",
-        ref_shocks_bp=[+250, +200, +150, +75, 0, 0],
+        description="Short-end shock up, decaying to +25bp at 10Y",
+        ref_shocks_bp=[+282, +234, +182, +86, +49, +25],
     ),
     Scenario(
         id="SHORT_DOWN", name="Short Rates Down",
-        description="Short-end shock down, long end unchanged",
-        ref_shocks_bp=[-250, -200, -150, -75, 0, 0],
+        description="Short-end shock down, decaying to -25bp at 10Y",
+        ref_shocks_bp=[-282, -234, -182, -86, -49, -25],
     ),
 ]
 

@@ -34,7 +34,7 @@ from src.key_rate_duration import (  # noqa: E402
 )
 from src.liquidity_ratios import compute_liquidity_ratios_with_workbook  # noqa: E402
 from src.market_curve import get_live_yield_curve  # noqa: E402
-from src.scenarios import SCENARIOS  # noqa: E402
+from src.scenarios import SCENARIOS, REF_LABELS  # noqa: E402
 from src.time_buckets import BUCKET_LABELS, N_BUCKETS  # noqa: E402
 from src.yield_curve import YieldCurve  # noqa: E402
 
@@ -366,8 +366,7 @@ with st.sidebar:
     st.divider()
     st.markdown("<p class='section-label'>Shock Profile</p>",
                 unsafe_allow_html=True)
-    ref_labels = ["O/N", "1Y", "2Y", "5Y", "10Y", "20Y"]
-    for label, bp in zip(ref_labels, selected_scenario.ref_shocks_bp):
+    for label, bp in zip(REF_LABELS, selected_scenario.ref_shocks_bp):
         color = GREEN if bp > 0 else (RED if bp < 0 else DIM)
         sign = "+" if bp > 0 else ""
         st.markdown(
