@@ -496,27 +496,44 @@ def hedge_efficiency_table(
     grid: KeyRateGrid | None = None,
     tenors: tuple[float, ...] = (2.0, 5.0, 10.0),
     notional_m: float = 100.0,
+    notionals: dict[float, float] | None = None,
 ) -> pd.DataFrame:
     """
-    EVE relief ($M) from $notional_m pay-fixed at each tenor under each scenario.
+    EVE relief ($M) from pay-fixed (or receive-fixed) IRS under each scenario.
+
+    If ``notionals`` is provided (tenor → signed $M), relief uses those sizes.
+    Otherwise each tenor uses the same ``notional_m`` as pay-fixed.
 
     Relief = −swap_KR01 × shock_bp / 1000.
     """
     grid = grid or KeyRateGrid()
     rows = []
-    for T in tenors:
-        kr = swap_unit_kr01_k(T, notional_m)
+    use_tenors = tuple(notionals.keys()) if notionals else tenors
+    for T in use_tenors:
+        T = float(T)
+        n = float(notionals[T]) if notionals is not None else float(notional_m)
+        kr = swap_unit_kr01_k(T, n)
+        if n >= 0:
+            label = f"{T:g}Y pay-fixed ${abs(n):.1f}m"
+        else:
+            label = f"{T:g}Y receive-fixed ${abs(n):.1f}m"
         row = {
-            "Instrument": f"{T:g}Y pay-fixed ${notional_m:g}m",
+            "Instrument": label,
+            "Notional ($M)": round(n, 1),
             "KR01 ($K/bp)": round(kr, 1),
         }
         for sc in scenarios:
             shocks = shocks_at_key_tenors(sc, grid)
-            # Map tenor to nearest grid key for shock
             idx = int(np.argmin(np.abs(np.asarray(grid.tenors) - T)))
             shock = float(shocks[idx])
             row[sc.name] = round(-kr * shock / 1_000.0, 2)
         rows.append(row)
+    # Total row when using ladder notionals
+    if notionals is not None and rows:
+        total = {"Instrument": "Ladder total", "Notional ($M)": "", "KR01 ($K/bp)": ""}
+        for sc in scenarios:
+            total[sc.name] = round(sum(float(r[sc.name]) for r in rows), 2)
+        rows.append(total)
     return pd.DataFrame(rows)
 
 

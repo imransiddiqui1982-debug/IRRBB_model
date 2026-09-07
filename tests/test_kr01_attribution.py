@@ -75,6 +75,15 @@ def test_hedge_efficiency_pay_fixed_helps_par_up():
     assert row10["KR01 ($K/bp)"] < 0
 
 
+def test_hedge_efficiency_uses_ladder_notionals():
+    notionals = {2.0: 50.0, 5.0: 80.0, 10.0: 100.0}
+    eff = hedge_efficiency_table(SCENARIOS, notionals=notionals)
+    assert "Ladder total" in set(eff["Instrument"])
+    assert len(eff) == 4
+    row10 = eff[eff["Instrument"].str.contains("10Y")].iloc[0]
+    assert abs(float(row10["Notional ($M)"])) == pytest.approx(100.0)
+
+
 def test_post_swap_improves_or_changes_par_up(calc):
     from src.key_rate_duration import proposed_swap_notionals, post_swap_eve_impact
 

@@ -1779,26 +1779,9 @@ with tab_kr:
             "<p class='section-label'>Treasury — IRS hedge playbook</p>",
             unsafe_allow_html=True,
         )
-        st.markdown(
-            "**EVE relief per $100m pay-fixed** (from KR01 × scenario shock)"
-        )
-        st.dataframe(
-            pack["efficiency"].style.format(
-                {**{c: "{:+.2f}" for c in pack["efficiency"].columns
-                    if c not in ("Instrument", "KR01 ($K/bp)")},
-                 "KR01 ($K/bp)": "{:,.1f}"}
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        st.markdown(
-            "**Post-swap EVE impact (2Y / 5Y / 10Y ladder)**  ·  "
-            "same bridge: cell = −KR01 × shock_bp / 1000"
-        )
         st.caption(
-            "Proposed notionals close the target hedge ratio of net KR01 at 2Y, 5Y and 10Y "
-            "(positive = pay-fixed). Adjust sizes below to stress the desk tickets."
+            "Proposed 2Y / 5Y / 10Y notionals close the target hedge ratio of net KR01 "
+            "(positive = pay-fixed). Relief and post-swap EVE both use these sizes."
         )
         _ln = pack.get("ladder_notionals") or {}
         n2_def = float(_ln.get(2.0, 0.0))
@@ -1821,8 +1804,11 @@ with tab_kr:
                 "10Y signed notional ($M)",
                 value=round(n10_def, 1), step=5.0, key="hedge_n_10y",
             )
-        from src.key_rate_duration import post_swap_eve_impact
+        from src.key_rate_duration import hedge_efficiency_table, post_swap_eve_impact
         custom_notionals = {2.0: float(n2), 5.0: float(n5), 10.0: float(n10)}
+        relief_df = hedge_efficiency_table(
+            SCENARIOS, notionals=custom_notionals,
+        )
         post = post_swap_eve_impact(
             kr01_df,
             SCENARIOS,
@@ -1831,23 +1817,28 @@ with tab_kr:
             custom_notionals,
         )
 
+        st.markdown(
+            "**EVE relief from proposed 2Y / 5Y / 10Y swaps**  ·  "
+            "cell = −swap_KR01 × shock_bp / 1000 (linked to notionals above)"
+        )
+        _relief_fmt = {
+            c: "{:+.2f}" for c in relief_df.columns
+            if c not in ("Instrument", "Notional ($M)", "KR01 ($K/bp)")
+        }
+        _relief_fmt["Notional ($M)"] = lambda v: "" if v == "" else f"{float(v):+.1f}"
+        _relief_fmt["KR01 ($K/bp)"] = lambda v: "" if v == "" else f"{float(v):+,.1f}"
+        st.dataframe(
+            relief_df.style.format(_relief_fmt),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "Ladder total = sum of relief across the three tickets under each scenario. "
+            "Same notionals feed the before/after Tier 1 comparison below."
+        )
+
         st.markdown("**Proposed swaps executed**")
         st.dataframe(post["notionals"], use_container_width=True, hide_index=True)
-
-        st.markdown("**Key-wise predicted ΔEVE after swaps ($M)**")
-        st.dataframe(
-            post["contrib_after"].style.format("{:+.2f}"),
-            use_container_width=True,
-        )
-        with st.expander("▼ Key-wise change vs unhedged (after − before, $M)"):
-            st.dataframe(
-                post["contrib_delta"].style.format("{:+.2f}"),
-                use_container_width=True,
-            )
-            st.caption(
-                "Only 2Y / 5Y / 10Y rows move from the swaps; other keys unchanged "
-                "under this linear ladder."
-            )
 
         st.markdown("**Total ΔEVE and % of Tier 1 — before vs after swaps**")
         summ = post["summary"]
@@ -1890,6 +1881,16 @@ with tab_kr:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, bgcolor=BG2),
         )
         st.plotly_chart(fig_t1, use_container_width=True)
+
+        # Sanity: ladder-total Parallel-Up relief ≈ −ΔEVE change on Parallel Up (predicted)
+        _par = next((s.name for s in SCENARIOS if s.id == "PS_UP"), None)
+        if _par and "Ladder total" in set(relief_df["Instrument"]):
+            _rel = float(relief_df.loc[relief_df["Instrument"] == "Ladder total", _par].iloc[0])
+            _chg = float(summ.loc[summ["Scenario"] == _par, "ΔEVE change ($M)"].iloc[0])
+            st.caption(
+                f"Check (Parallel Up): ladder relief {_rel:+.2f} $M vs "
+                f"ΔEVE change {_chg:+.2f} $M (differences = convexity / other keys)."
+            )
 
         st.download_button(
             "⬇ Download post-swap EVE impact CSV",
