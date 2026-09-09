@@ -105,7 +105,7 @@ One row per instrument:
 
 **MBS HQLA / NSFR:** Ginnie Mae → LCR Level 1 (0% haircut), NSFR RSF 5%. Fannie/Freddie agency → LCR Level 2A (15% haircut), NSFR RSF 15%. Private-label RMBS → not HQLA; NSFR RSF ~85%. Whole-loan residential mortgages ≥1Y → RSF 65%, **never HQLA**. Encumbered >1Y → RSF 100%. Residual maturity is **contractual** (CPR never feeds LCR/NSFR).
 
-**Mortgage / MBS CPR:** Option-adjusted pricing (Steps A→B→C): curve anchor → refi incentive → monthly CPR → cash flows, re-derived on every EVE/KR01 curve bump. Each `mbs` / `whole_loan` uses its own balance-sheet `wac`, `spread_to_curve`, and aging — no sidebar CPR/PSA overlay.
+**Mortgage / MBS CPR:** Option-adjusted pricing (Steps A→B→C). **Step A** anchors the mortgage rate to live **FRED PMMS 30Y** (`apply_pmms_anchor`). **Step B** logistic parameters default from `data/calibrated_prepayment_params.json` — fit on Freddie SFLLD samples + PMMS history via `python scripts/calibrate_from_freddie_pmms.py` (place sample files in `data/freddie/`). OAS is discount-only.
 
 **Tip:** When NMD is enabled, leave demand deposits out of the CSV (or they are replaced). Use the CSV for assets + wholesale funding only.
 
@@ -155,7 +155,7 @@ python scripts/create_deposit_data_template.py
 `ΔNII = ± notional × shock_bp(bucket) / 10,000`.  
 CPR mortgages: extra 1Y prepayments under the shock reinvest at the shocked short rate vs lost contractual coupon.
 
-**Mortgage prepayment:** see `src/prepayment.py` (S-curve + PSA). Optional HF Chronos refinement via `requirements-hf.txt`.
+**Mortgage prepayment:** live OA path in `src/mbs_pricing.py`; calibrate Step-B params with `python -m src.calibrate_prepayment` → `data/calibrated_prepayment_params.json`. Optional HF Chronos via `requirements-hf.txt`.
 
 **Curves:** with live curve on: **0–12M SOFR**, **1Y–10Y USD SOFR IRS mid**; then BCBS shocks are added.
 
@@ -242,8 +242,10 @@ IRRBB_model/
 │   └── live_curve_cache.json
 ├── src/
 │   ├── cashflows.py       # Instrument CF schedules (+ CPR amortisation)
-│   ├── prepayment.py      # PSA / S-curve CPR (+ optional HF Chronos)
-│   ├── cpr_calibration.py # PMMS+WAC → scenario CPR (Option B)
+│   ├── prepayment.py      # PSA / S-curve helpers (+ optional HF Chronos)
+│   ├── mbs_pricing.py     # OA MBS / whole-loan Steps A→B→C
+│   ├── calibrate_prepayment.py  # Fit Step-B params to loan-level history
+│   ├── cpr_calibration.py # ALCO reference S-curve (documentation)
 │   ├── time_buckets.py    # 19 BCBS buckets
 │   ├── scenarios.py       # Six prescribed shocks
 │   ├── yield_curve.py     # Discounting

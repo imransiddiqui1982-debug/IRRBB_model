@@ -20,7 +20,8 @@ from .time_buckets import N_BUCKETS, years_to_bucket
 from .yield_curve import YieldCurve
 
 
-# Defaults from the implementation spec (illustrative, not portfolio-calibrated)
+# Defaults from the implementation spec (illustrative); overridden at runtime
+# by ``data/calibrated_prepayment_params.json`` when present (see calibrate_prepayment).
 DEFAULT_SPREAD_TO_CURVE = 0.0175
 DEFAULT_OAS = 0.005
 DEFAULT_BASE_TURNOVER = 0.06
@@ -29,6 +30,22 @@ DEFAULT_LOGISTIC_K = 2.2
 DEFAULT_LOGISTIC_MIDPOINT = 0.60
 DEFAULT_SEASONING_RAMP_MONTHS = 30
 DEFAULT_ANCHOR_TENOR = 10.0
+
+
+def _prepay_defaults() -> dict:
+    """Live Step-B defaults: calibrated JSON if available, else illustrative."""
+    try:
+        from .calibrate_prepayment import get_engine_prepay_defaults
+        return get_engine_prepay_defaults()
+    except Exception:
+        return {
+            "base_turnover": DEFAULT_BASE_TURNOVER,
+            "max_refi_cpr": DEFAULT_MAX_REFI_CPR,
+            "logistic_k": DEFAULT_LOGISTIC_K,
+            "logistic_midpoint": DEFAULT_LOGISTIC_MIDPOINT,
+            "seasoning_ramp_months": DEFAULT_SEASONING_RAMP_MONTHS,
+            "calibration_source": "illustrative_defaults",
+        }
 
 
 @dataclass
@@ -257,6 +274,20 @@ def terms_from_instrument(inst, spread_override: float | None = None) -> MbsTerm
     mbs_level = getattr(inst, "mbs_level", "") or ""
     hqla = getattr(inst, "hqla_level", None) or hqla_from_mbs_level(mbs_level, is_wl)
 
+    dflt = _prepay_defaults()
+
+    def _pick(attr: str, key: str) -> float:
+        raw = getattr(inst, attr, None)
+        if raw is None or (isinstance(raw, float) and np.isnan(raw)):
+            return float(dflt[key])
+        return float(raw)
+
+    def _pick_int(attr: str, key: str) -> int:
+        raw = getattr(inst, attr, None)
+        if raw is None or raw == "":
+            return int(dflt[key])
+        return int(raw)
+
     return MbsTerms(
         notional=float(inst.notional),
         wac=wac,
@@ -265,22 +296,64 @@ def terms_from_instrument(inst, spread_override: float | None = None) -> MbsTerm
         anchor_tenor=anchor,
         spread_to_curve=spread,
         oas=oas,
-        base_turnover=float(getattr(inst, "base_turnover", DEFAULT_BASE_TURNOVER) or DEFAULT_BASE_TURNOVER),
-        max_refi_cpr=float(getattr(inst, "max_refi_cpr", DEFAULT_MAX_REFI_CPR) or DEFAULT_MAX_REFI_CPR),
-        logistic_k=float(getattr(inst, "logistic_k", DEFAULT_LOGISTIC_K) or DEFAULT_LOGISTIC_K),
-        logistic_midpoint=float(
-            getattr(inst, "logistic_midpoint", DEFAULT_LOGISTIC_MIDPOINT) or DEFAULT_LOGISTIC_MIDPOINT
-        ),
-        seasoning_ramp_months=int(
-            getattr(inst, "seasoning_ramp_months", DEFAULT_SEASONING_RAMP_MONTHS)
-            or DEFAULT_SEASONING_RAMP_MONTHS
-        ),
+        base_turnover=_pick("base_turnover", "base_turnover"),
+        max_refi_cpr=_pick("max_refi_cpr", "max_refi_cpr"),
+        logistic_k=_pick("logistic_k", "logistic_k"),
+        logistic_midpoint=_pick("logistic_midpoint", "logistic_midpoint"),
+        seasoning_ramp_months=_pick_int("seasoning_ramp_months", "seasoning_ramp_months"),
         is_whole_loan=is_wl,
         hqla_level=hqla,
         nsfr_rsf_factor=getattr(inst, "nsfr_rsf_factor", None),
         credit_spread=float(getattr(inst, "credit_spread", 0.0) or 0.0),
         name=str(getattr(inst, "name", "")),
     )
+
+
+def apply_pmms_anchor(
+    instruments: Sequence,
+    curve: YieldCurve,
+    pmms_rate: float | None = None,
+) -> dict:
+    """
+    Anchor Step A to FRED PMMS 30Y (or an explicit rate).
+
+    Sets each OA instrument's ``spread_to_curve`` so that on ``curve``:
+
+        mortgage_rate = curve.rate(anchor) + spread ≈ PMMS
+
+    KR01 / BCBS shocks then move mortgage rate 1:1 with the anchor tenor
+    while the **level** stays PMMS-consistent at the base curve.
+    """
+    from .pmms import get_latest_pmms
+
+    meta: dict = {"applied": 0, "pmms_rate": None, "as_of": None, "source": None}
+    if pmms_rate is None:
+        try:
+            snap = get_latest_pmms(use_cache_on_failure=True)
+            pmms_rate = float(snap["rate"])
+            meta["as_of"] = snap.get("as_of")
+            meta["source"] = snap.get("source")
+        except Exception as exc:
+            meta["error"] = str(exc)
+            return meta
+    else:
+        pmms_rate = float(pmms_rate)
+        if pmms_rate > 1.0:
+            pmms_rate /= 100.0
+        meta["source"] = "override"
+
+    meta["pmms_rate"] = pmms_rate
+    n = 0
+    for inst in instruments:
+        if not is_option_adjusted_prepayable(inst):
+            continue
+        anchor = float(getattr(inst, "anchor_tenor", DEFAULT_ANCHOR_TENOR) or DEFAULT_ANCHOR_TENOR)
+        spread = float(pmms_rate) - float(curve.rate(anchor))
+        spread = float(np.clip(spread, -0.05, 0.15))
+        inst.spread_to_curve = spread
+        n += 1
+    meta["applied"] = n
+    return meta
 
 
 def is_option_adjusted_prepayable(inst) -> bool:

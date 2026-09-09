@@ -129,11 +129,12 @@ class Instrument:
     anchor_tenor:     float = 10.0
     spread_to_curve:  float = 0.0175
     oas:              float = 0.005
-    base_turnover:    float = 0.06
-    max_refi_cpr:     float = 0.34
-    logistic_k:       float = 2.2
-    logistic_midpoint: float = 0.60
-    seasoning_ramp_months: int = 30
+    # Step-B S-curve; None → data/calibrated_prepayment_params.json or illustrative
+    base_turnover:    float | None = None
+    max_refi_cpr:     float | None = None
+    logistic_k:       float | None = None
+    logistic_midpoint: float | None = None
+    seasoning_ramp_months: int | None = None
     hqla_level:       str = ""   # level_1 | level_2a | not_eligible
     nsfr_rsf_factor:   float | None = None
     credit_spread:    float = 0.0  # whole-loan placeholder only
@@ -142,6 +143,28 @@ class Instrument:
     def __post_init__(self):
         if self.repricing_years is None:
             self.repricing_years = self.maturity_years
+        # Resolve Step-B defaults from calibration JSON when blank
+        try:
+            from .calibrate_prepayment import get_engine_prepay_defaults
+            _pp = get_engine_prepay_defaults()
+        except Exception:
+            _pp = {
+                "base_turnover": 0.06,
+                "max_refi_cpr": 0.34,
+                "logistic_k": 2.2,
+                "logistic_midpoint": 0.60,
+                "seasoning_ramp_months": 30,
+            }
+        if self.base_turnover is None:
+            self.base_turnover = float(_pp["base_turnover"])
+        if self.max_refi_cpr is None:
+            self.max_refi_cpr = float(_pp["max_refi_cpr"])
+        if self.logistic_k is None:
+            self.logistic_k = float(_pp["logistic_k"])
+        if self.logistic_midpoint is None:
+            self.logistic_midpoint = float(_pp["logistic_midpoint"])
+        if self.seasoning_ramp_months is None:
+            self.seasoning_ramp_months = int(_pp["seasoning_ramp_months"])
         name_l = self.name.lower()
         # MBS / whole loans always prepays; mortgages auto-enable CPR by name
         if self.instrument_type in ("mbs", "whole_loan"):

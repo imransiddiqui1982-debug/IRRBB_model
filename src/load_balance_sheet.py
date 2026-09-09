@@ -17,6 +17,18 @@ import pandas as pd
 from .cashflows import Instrument, InstrumentType
 from .file_io import read_csv_robust
 
+try:
+    from .calibrate_prepayment import get_engine_prepay_defaults
+except Exception:  # pragma: no cover
+    def get_engine_prepay_defaults():  # type: ignore
+        return {
+            "base_turnover": 0.06,
+            "max_refi_cpr": 0.34,
+            "logistic_k": 2.2,
+            "logistic_midpoint": 0.60,
+            "seasoning_ramp_months": 30,
+        }
+
 CsvSource = Union[str, TextIO, BinaryIO, io.BytesIO]
 
 REQUIRED_COLUMNS = [
@@ -112,6 +124,7 @@ def _opt_int(row: pd.Series, col: str, default=None):
 def _row_to_instrument(row: pd.Series) -> Instrument:
     side = str(row["side"]).strip().lower()
     instrument_type = str(row["instrument_type"]).strip().lower()
+    _pp = get_engine_prepay_defaults()
 
     payment_freq = 2
     if "payment_freq" in row.index and pd.notna(row["payment_freq"]):
@@ -195,11 +208,13 @@ def _row_to_instrument(row: pd.Series) -> Instrument:
         anchor_tenor=_opt_float(row, "anchor_tenor", 10.0) or 10.0,
         spread_to_curve=spread if spread is not None else 0.0175,
         oas=oas if oas is not None else 0.005,
-        base_turnover=_opt_float(row, "base_turnover", 0.06) or 0.06,
-        max_refi_cpr=_opt_float(row, "max_refi_cpr", 0.34) or 0.34,
-        logistic_k=_opt_float(row, "logistic_k", 2.2) or 2.2,
-        logistic_midpoint=_opt_float(row, "logistic_midpoint", 0.60) or 0.60,
-        seasoning_ramp_months=_opt_int(row, "seasoning_ramp_months", 30) or 30,
+        base_turnover=_opt_float(row, "base_turnover", _pp["base_turnover"]) or _pp["base_turnover"],
+        max_refi_cpr=_opt_float(row, "max_refi_cpr", _pp["max_refi_cpr"]) or _pp["max_refi_cpr"],
+        logistic_k=_opt_float(row, "logistic_k", _pp["logistic_k"]) or _pp["logistic_k"],
+        logistic_midpoint=_opt_float(row, "logistic_midpoint", _pp["logistic_midpoint"])
+        or _pp["logistic_midpoint"],
+        seasoning_ramp_months=_opt_int(row, "seasoning_ramp_months", _pp["seasoning_ramp_months"])
+        or _pp["seasoning_ramp_months"],
         hqla_level=hqla_level,
         nsfr_rsf_factor=_opt_float(row, "nsfr_rsf_factor"),
         credit_spread=_opt_float(row, "credit_spread", 0.0) or 0.0,

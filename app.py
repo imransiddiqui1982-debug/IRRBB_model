@@ -338,98 +338,80 @@ with st.sidebar:
         value=500, min_value=50, max_value=10000, step=50,
     )
     st.markdown(
-    f"<div style='font-size:11px;line-height:1.8;margin-top:4px'>"
-    f"<span style='color:{SIDEBAR_DIM}'>Outlier threshold: </span>"
-    f"<span style='color:{SIDEBAR_TEXT};font-weight:600;font-family:monospace'>"
-    f"${tier1 * 0.15:.0f}M</span>"
-    f"<span style='color:{SIDEBAR_DIM}'> (15% of T1)</span><br>"
-    f"<span style='color:{SIDEBAR_DIM}'>Watch threshold: </span>"
-    f"<span style='color:{SIDEBAR_TEXT};font-weight:600;font-family:monospace'>"
-    f"${tier1 * 0.10:.0f}M</span>"
-    f"<span style='color:{SIDEBAR_DIM}'> (10% of T1)</span>"
-    f"</div>",
-    unsafe_allow_html=True,
-)
-    
+        f"<div style='font-size:11px;line-height:1.8;margin-top:4px'>"
+        f"<span style='color:{SIDEBAR_DIM}'>Outlier threshold: </span>"
+        f"<span style='color:{SIDEBAR_TEXT};font-weight:600;font-family:monospace'>"
+        f"${tier1 * 0.15:.0f}M</span>"
+        f"<span style='color:{SIDEBAR_DIM}'> (15% of T1)</span><br>"
+        f"<span style='color:{SIDEBAR_DIM}'>Watch threshold: </span>"
+        f"<span style='color:{SIDEBAR_TEXT};font-weight:600;font-family:monospace'>"
+        f"${tier1 * 0.10:.0f}M</span>"
+        f"<span style='color:{SIDEBAR_DIM}'> (10% of T1)</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
     st.divider()
 
-    st.markdown("<p class='section-label'>Balance Sheet</p>",
+    # ── Two uploads only ──────────────────────────────────────────────────────
+    st.markdown("<p class='section-label'>Data uploads</p>",
                 unsafe_allow_html=True)
+    st.caption(
+        "Upload your files, or leave blank to run on built-in samples."
+    )
+
     bs_template_path = os.path.join(os.path.dirname(__file__), "data", "balance_sheet_template.csv")
     if not os.path.exists(bs_template_path):
         bs_template_path = os.path.join(os.path.dirname(__file__), "data", "sample_balance_sheet.csv")
-    with open(bs_template_path, "rb") as f:
-        template_bytes = f.read()
-    st.download_button(
-        "Download CSV template",
-        template_bytes,
-        file_name="balance_sheet_template.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-    use_calibrated_bs = st.checkbox(
-        "Load calibrated balance sheet sample",
-        value=os.path.exists(bs_template_path),
-        help="Uses balance_sheet_template.csv ($2.9B assets, aligned with deposit model).",
-    )
+    lcr_nsfr_path = os.path.join(os.path.dirname(__file__), "data", "us_lcr_nsfr_deposit_model.xlsx")
+    if not os.path.exists(lcr_nsfr_path):
+        lcr_nsfr_path = os.path.join(
+            os.path.dirname(__file__), "data", "comprehensive_deposit_template_v2.xlsx"
+        )
+
     uploaded_csv = st.file_uploader(
-        "Upload balance sheet CSV",
+        "1. Balance sheet CSV",
         type=["csv"],
-        disabled=use_calibrated_bs,
-        help="One row per instrument. Use the template for required columns.",
-    )
-
-    st.divider()
-
-    st.markdown("<p class='section-label'>NMD Deposits</p>",
-                unsafe_allow_html=True)
-    nmd_template_path = os.path.join(os.path.dirname(__file__), "data", "comprehensive_deposit_template.xlsx")
-    legacy_template = os.path.join(os.path.dirname(__file__), "data", "nmd_deposit_template.xlsx")
-    deposit_template_path = nmd_template_path if os.path.exists(nmd_template_path) else legacy_template
-    if os.path.exists(deposit_template_path):
-        with open(deposit_template_path, "rb") as f:
-            nmd_template_bytes = f.read()
-        st.download_button(
-            "Download comprehensive deposit template",
-            nmd_template_bytes,
-            file_name="comprehensive_deposit_template.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-    v2_path = os.path.join(os.path.dirname(__file__), "data", "us_lcr_nsfr_deposit_model.xlsx")
-    if not os.path.exists(v2_path):
-        v2_path = os.path.join(os.path.dirname(__file__), "data", "comprehensive_deposit_template_v2.xlsx")
-    if os.path.exists(v2_path):
-        with open(v2_path, "rb") as f:
-            v2_bytes = f.read()
-        st.download_button(
-            "Download deposit + LCR/NSFR model",
-            v2_bytes,
-            file_name="us_lcr_nsfr_deposit_model.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-    use_nmd = st.checkbox(
-        "Refine NMD deposits and feed IRRBB",
-        value=True,
-        help="Upload monthly deposit history to estimate core / non-core / sticky splits.",
-    )
-    use_v2_sample = st.checkbox(
-        "Load calibrated deposit model sample",
-        value=use_nmd and os.path.exists(v2_path),
-        disabled=not use_nmd or not os.path.exists(v2_path),
-        help="Uses us_lcr_nsfr_deposit_model.xlsx — NMD + HQLA + LCR/NSFR inputs.",
-    )
-    deposit_name = st.text_input("Deposit pool name", value="Retail NMD")
-    uploaded_nmd = st.file_uploader(
-        "Upload NMD customer deposit file",
-        type=["csv", "xlsx", "xls"],
-        disabled=not use_nmd or use_v2_sample,
+        key="upload_balance_sheet",
         help=(
-            "Excel: Customer Deposits + Deposit Rates (monthly product rates) "
-            "+ Market Rates. Or enable 'Load v2 sample' above."
+            "All banking-book instruments (assets & liabilities). "
+            "One row per instrument — use the template for columns."
         ),
     )
+    if os.path.exists(bs_template_path):
+        with open(bs_template_path, "rb") as f:
+            st.download_button(
+                "⬇ Balance sheet template",
+                f.read(),
+                file_name="balance_sheet_template.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="dl_bs_template",
+            )
+
+    uploaded_lcr_nsfr = st.file_uploader(
+        "2. LCR / NSFR + NMD workbook",
+        type=["xlsx", "xls"],
+        key="upload_lcr_nsfr",
+        help=(
+            "Deposit history (NMD core / non-core / sticky), HQLA, "
+            "LCR outflows/inflows, and NSFR ASF/RSF in one workbook."
+        ),
+    )
+    if os.path.exists(lcr_nsfr_path):
+        with open(lcr_nsfr_path, "rb") as f:
+            st.download_button(
+                "⬇ LCR/NSFR + NMD template",
+                f.read(),
+                file_name="us_lcr_nsfr_deposit_model.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="dl_lcr_nsfr_template",
+            )
+
+    deposit_name = "Retail NMD"
+    # Resolved after uploads: sample used when uploader empty
+    use_nmd = True
 
     st.divider()
 
@@ -467,20 +449,6 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
 
-    st.divider()
-
-    st.markdown("<p class='section-label'>Mortgage / MBS prepay</p>",
-                unsafe_allow_html=True)
-    st.caption(
-        "No sidebar CPR/PSA or portfolio WAC. Each MBS / whole loan uses its "
-        "**balance-sheet WAC**, spread, aging, and anchor. Live OA path: "
-        "curve → refi incentive → CPR → CFs for EVE / KR01. LCR/NSFR ignore CPR."
-    )
-
-    st.divider()
-    st.caption("Upload balance sheet CSV and/or refine NMD deposits before IRRBB.")
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  MODEL
 # ══════════════════════════════════════════════════════════════════════════════
@@ -501,7 +469,7 @@ def run_model(
     use_nmd: bool,
     curve_tenors: tuple[float, ...] | None,
     curve_rates: tuple[float, ...] | None,
-    _model_version: int = 14,
+    _model_version: int = 15,
 ):
     if csv_bytes:
         assets, liabilities = load_instruments_from_csv(io.BytesIO(csv_bytes))
@@ -520,7 +488,11 @@ def run_model(
     else:
         curve = YieldCurve()
 
-    # OA MBS / whole loans use per-instrument balance-sheet WAC (no sidebar CPR table)
+    # Step A: anchor OA mortgage rate to live FRED PMMS 30Y
+    from src.mbs_pricing import apply_pmms_anchor
+    pmms_meta = apply_pmms_anchor(list(assets) + list(liabilities), curve)
+
+    # OA MBS / whole loans use per-instrument WAC + PMMS-anchored spread
     calc = IRRBBCalculator(
         assets,
         liabilities,
@@ -534,7 +506,7 @@ def run_model(
     dv01_gap = calc.bucket_dv01_gap()
     return (
         calc, results, gap, maturity_gap, dv01_gap,
-        assets, liabilities, nmd_result, curve,
+        assets, liabilities, nmd_result, curve, pmms_meta,
     )
 
 
@@ -558,46 +530,68 @@ if use_live_curve:
         use_live_curve = False
 
 csv_payload = None
-if use_calibrated_bs and os.path.exists(bs_template_path):
+bs_source_label = "built-in sample"
+if uploaded_csv is not None:
+    csv_payload = uploaded_csv.getvalue()
+    bs_source_label = uploaded_csv.name
+elif os.path.exists(bs_template_path):
     with open(bs_template_path, "rb") as f:
         csv_payload = f.read()
-elif uploaded_csv is not None:
-    csv_payload = uploaded_csv.getvalue()
+    bs_source_label = os.path.basename(bs_template_path)
+
 nmd_payload = None
+nmd_source_label = "built-in sample"
+if uploaded_lcr_nsfr is not None:
+    nmd_payload = uploaded_lcr_nsfr.getvalue()
+    nmd_source_label = uploaded_lcr_nsfr.name
+elif os.path.exists(lcr_nsfr_path):
+    with open(lcr_nsfr_path, "rb") as f:
+        nmd_payload = f.read()
+    nmd_source_label = os.path.basename(lcr_nsfr_path)
+
+use_nmd = nmd_payload is not None
 if use_nmd:
-    if use_v2_sample and os.path.exists(v2_path):
-        with open(v2_path, "rb") as f:
-            nmd_payload = f.read()
-    elif uploaded_nmd is not None:
-        nmd_payload = uploaded_nmd.getvalue()
-if use_nmd and not nmd_payload:
-    st.error(
-        "NMD refinement is enabled. Upload a deposit file or enable "
-        "'Load calibrated deposit model sample' in the sidebar."
-    )
-    st.stop()
+    st.sidebar.caption(f"Balance sheet: {bs_source_label}")
+    st.sidebar.caption(f"LCR/NSFR + NMD: {nmd_source_label}")
+else:
+    st.sidebar.caption(f"Balance sheet: {bs_source_label}")
+    st.sidebar.warning("No LCR/NSFR + NMD workbook found — NMD refinement skipped.")
+
+# pmms_meta filled after run_model
+pmms_meta: dict = {}
+
 try:
     (
         calc, results, gap, maturity_gap, dv01_gap,
-        assets, liabilities, nmd_result, curve,
+        assets, liabilities, nmd_result, curve, pmms_meta,
     ) = run_model(
         float(tier1),
         csv_payload,
         nmd_payload,
-        deposit_name.strip() or "Retail NMD",
+        deposit_name,
         use_nmd,
         curve_tenors_t,
         curve_rates_t,
     )
 except UnicodeDecodeError:
     st.error(
-        "File encoding error: the balance sheet must be a **CSV** file and the deposit "
-        "file must be an **Excel workbook (.xlsx)**. Do not swap them in the uploaders."
+        "File encoding error: use a **CSV** for the balance sheet and an "
+        "**Excel (.xlsx)** workbook for LCR/NSFR + NMD."
     )
     st.stop()
 except ValueError as exc:
     st.error(str(exc))
     st.stop()
+
+if pmms_meta.get("pmms_rate") is not None:
+    st.sidebar.success(
+        f"PMMS anchor: {pmms_meta['pmms_rate'] * 100:.2f}% "
+        f"({pmms_meta.get('as_of', 'n/a')}) · "
+        f"{pmms_meta.get('applied', 0)} OA pools"
+    )
+elif pmms_meta.get("error"):
+    st.sidebar.caption(f"PMMS unavailable — using sheet spreads ({pmms_meta['error']})")
+
 active = next(r for r in results if r.scenario.name == selected_name)
 detail = calc.instrument_eve_detail(selected_scenario)
 nmd_customers = None
@@ -607,9 +601,6 @@ if nmd_payload:
     except Exception:
         nmd_customers = None
 workbook_src = io.BytesIO(nmd_payload) if nmd_payload else None
-if workbook_src is None and os.path.exists(v2_path):
-    with open(v2_path, "rb") as _wb_f:
-        workbook_src = io.BytesIO(_wb_f.read())
 liquidity = compute_liquidity_ratios_with_workbook(
     assets,
     liabilities,
@@ -713,14 +704,11 @@ tab0, tab_lcr, tab1, tab2, tab3, tab4, tab5, tab_kr, tab6 = st.tabs([
 with tab0:
     st.markdown("<p class='section-label'>Behavioural NMD Refinement</p>",
                 unsafe_allow_html=True)
-    if not use_nmd:
+    if nmd_result is None:
         st.info(
-            "Enable **Refine NMD deposits and feed IRRBB** in the sidebar, then upload "
-            "the customer-level Excel template "
-            "(customer_id, segment, start_date, deposit_rate, 36 EOM balances + market rates)."
+            "Upload the **LCR / NSFR + NMD workbook** in the sidebar "
+            "(or use the built-in sample) to refine core / non-core deposits."
         )
-    elif nmd_result is None:
-        st.warning("NMD refinement is enabled. Upload an NMD Excel/CSV file to continue.")
     else:
         st.success(
             f"Refined **{nmd_result.deposit_name}** from "
@@ -843,9 +831,11 @@ with tab_lcr:
     st.markdown("<p class='section-label'>Net Stable Funding Ratio (NSFR)</p>",
                 unsafe_allow_html=True)
     st.caption(
-        "NSFR = Available Stable Funding (ASF) / Required Stable Funding (RSF) ≥ 100%. "
+        "NSFR = ASF / **tailored RSF** ≥ minimum (workbook default 100%). "
         "ASF from capital (100%), retail deposits (95%/90%), wholesale by tenor. "
-        "RSF from HQLA (0–50%), loans (65–85%), long-term assets."
+        "RSF line items are weighted first; Category IV banks then apply an "
+        "**RSF reduction** (default 30%) before the ratio — so the breakdown "
+        "Total is pre-adjustment, not the NSFR denominator."
     )
 
     nsfr_color = GREEN if nsfr_result.nsfr_pass else RED
@@ -859,11 +849,40 @@ with tab_lcr:
         unsafe_allow_html=True,
     )
 
-    n1, n2, n3, n4 = st.columns(4)
+    _rsf_pre = 0.0
+    if (
+        nsfr_result.rsf_breakdown is not None
+        and not nsfr_result.rsf_breakdown.empty
+        and "RSF ($M)" in nsfr_result.rsf_breakdown.columns
+    ):
+        _rsf_pre = float(
+            pd.to_numeric(nsfr_result.rsf_breakdown["RSF ($M)"], errors="coerce")
+            .fillna(0)
+            .sum()
+        )
+    if _rsf_pre <= 0:
+        _rsf_pre = float(nsfr_result.rsf_total)
+    _rsf_tailor_pct = (
+        (1.0 - float(nsfr_result.rsf_total) / _rsf_pre) * 100.0
+        if _rsf_pre > 1e-9
+        else 0.0
+    )
+
+    n1, n2, n3, n4, n5 = st.columns(5)
     n1.metric("ASF Total", f"${nsfr_result.asf_total:,.1f}M")
-    n2.metric("RSF Total", f"${nsfr_result.rsf_total:,.1f}M")
-    n3.metric("ASF — Capital", f"${nsfr_result.asf_capital:,.1f}M")
-    n4.metric("Funding Gap", f"${nsfr_result.asf_total - nsfr_result.rsf_total:+,.1f}M")
+    n2.metric("RSF (pre-adj)", f"${_rsf_pre:,.1f}M")
+    n3.metric(
+        "RSF (tailored)",
+        f"${nsfr_result.rsf_total:,.1f}M",
+        delta=f"−{_rsf_tailor_pct:.0f}% Category IV" if _rsf_tailor_pct > 0.5 else None,
+        delta_color="off",
+    )
+    n4.metric("ASF — Capital", f"${nsfr_result.asf_capital:,.1f}M")
+    n5.metric(
+        "Funding Gap",
+        f"${nsfr_result.asf_total - nsfr_result.rsf_total:+,.1f}M",
+        help="ASF − tailored RSF (the NSFR denominator).",
+    )
 
     if nmd_result is not None:
         st.info(
@@ -882,6 +901,11 @@ with tab_lcr:
         )
     with col_rsf:
         st.markdown("**RSF breakdown (asset requirements)**")
+        st.caption(
+            f"Table Total = **pre-adjustment** RSF (${_rsf_pre:,.1f}M). "
+            f"NSFR uses tailored RSF ${nsfr_result.rsf_total:,.1f}M "
+            f"after ~{_rsf_tailor_pct:.0f}% Category IV reduction."
+        )
         st.dataframe(
             _with_total_row(nsfr_result.rsf_breakdown),
             use_container_width=True,
@@ -1593,28 +1617,70 @@ with tab_kr:
         )
         st.plotly_chart(fig_sk, use_container_width=True)
 
-        # ── Mortgage S-curve / CPR–PSA reference (page body, not sidebar) ─────
+        # ── Mortgage prepay / CPR–PSA (live model vs ALCO reference) ──────────
         st.divider()
         st.markdown(
-            "<p class='section-label'>Mortgage S-curve — CPR &amp; PSA reference</p>",
+            "<p class='section-label'>MBS / mortgage prepay — how the model works</p>",
             unsafe_allow_html=True,
         )
         st.markdown(
-            """
-**How CPR and PSA are calculated (reference)**
+            r"""
+**Live EVE / KR01 path (per MBS or whole loan)** — Steps A → B → C in `mbs_pricing`.
+Re-run on every curve (including KR01 bumps). No portfolio sidebar CPR/PSA override.
 
-1. **Refi incentive (bp)** = \\((\\mathrm{WAC} - \\mathrm{mortgage\\ rate}) \\times 100\\).
-   Positive = in-the-money to refinance; negative = lock-in.
-2. **CPR %** is read from the agency-style **S-curve** (incentive → annual CPR),
-   optionally blended with a logistic S-curve between knots.
-3. **PSA %** converts CPR at a seasoning age:
-   at age ≥ 30 months, \\(100\\%\\ \\mathrm{PSA} = 6\\%\\ \\mathrm{CPR}\\), so
-   \\(\\mathrm{PSA\\%} \\approx \\mathrm{CPR\\%} / 6 \\times 100\\).
-4. **Live EVE / KR01** for MBS and whole loans do **not** use a portfolio sidebar speed.
-   Each pool uses its **balance-sheet WAC**, curve anchor + spread → mortgage rate →
-   logistic CPR × seasoning (Steps A→B→C). Tables below are ALCO documentation /
-   scenario mapping, not an override of pricing.
+**Step A — Mortgage rate & refi incentive**
+- Live **FRED PMMS 30Y** anchors the mortgage-rate *level*: each OA pool’s
+  `spread_to_curve` is set so \(\mathrm{curve}(\mathrm{anchor})+\mathrm{spread}\approx\mathrm{PMMS}\)
+  on the base curve. BCBS / KR01 bumps then move the rate 1:1 with the anchor.
+- \(\mathrm{refi\ incentive\ (pp)} = (\mathrm{WAC} - \mathrm{mortgage\ rate}) \times 100\)
+  (WAC and rates are decimals; result is **percentage points**).
+- Positive = in-the-money to refinance; negative = lock-in.
+- Fallback: balance-sheet `spread_to_curve` if PMMS fetch fails.
+
+**Step B — CPR (logistic × seasoning)**
+- Logistic refi response (parameters from `data/calibrated_prepayment_params.json`
+  when present — fit via `python -m src.calibrate_prepayment` on loan-level history;
+  otherwise illustrative defaults):
+  \(\mathrm{refi\_response} = \dfrac{\mathrm{max\_refi\_cpr}}{1 + e^{-k\,(\mathrm{incentive\_pp} - \mathrm{midpoint})}}\)
+- **Seasoning ramp** (calibrated `seasoning_ramp_months`, else 30):
+  \(\mathrm{seasoning} = \min\!\big((\mathrm{pool\_age} + m) / \mathrm{ramp\_months},\ 1\big)\)
+  for forecast month \(m\). Young pools get lower CPR; at full seasoning the ramp is 1.
+- \(\mathrm{CPR} = (\mathrm{base\_turnover} + \mathrm{refi\_response}) \times \mathrm{seasoning}\)
+- Monthly SMM from CPR; drives scheduled principal + prepay cash flows.
+- Seasoning is a linear age ramp on logistic CPR (fit separately near zero incentive).
+  PSA is only a **reporting label** of that CPR.
+
+**PSA (reporting only)**
+- \(\mathrm{PSA} = \mathrm{CPR} / 0.06 \times 100\)  (convention: \(100\) PSA ≡ \(6\%\) seasoned CPR).
+- PSA is **not** an input that prices the book; cash flows use the logistic CPR above.
+
+**Step C — Price / EVE — where OAS is used**
+- Discount each month’s CF at \(\mathrm{curve}(t) + \mathrm{OAS}\).
+- **OAS does not change CPR or PSA.** It only shifts the discount rate (spread over the
+  curve), so it moves PV, EVE, and KR01 for a given prepay schedule.
+- Default OAS ≈ 50 bp if blank on the instrument.
+
+**Agency knot S-curve tables below** are ALCO documentation / scenario mapping only
+(WAC vs implied mortgage rate → illustrative CPR/PSA). They do **not** override
+Steps A–C pricing. Live logistic parameters come from loan-level calibration when
+`data/calibrated_prepayment_params.json` is present.
             """
+        )
+
+        from src.calibrate_prepayment import get_engine_prepay_defaults
+        _pp = get_engine_prepay_defaults()
+        _r2 = _pp.get("r_squared")
+        _r2_txt = f"{float(_r2):.3f}" if _r2 is not None else "n/a"
+        st.success(
+            f"**Active Step-B parameters** (source: `{_pp.get('calibration_source', 'n/a')}` · "
+            f"R²={_r2_txt}): "
+            f"base_turnover={_pp['base_turnover']:.4f}, "
+            f"max_refi_cpr={_pp['max_refi_cpr']:.4f}, "
+            f"k={_pp['logistic_k']:.3f}, "
+            f"midpoint={_pp['logistic_midpoint']:.3f}, "
+            f"seasoning_ramp={_pp['seasoning_ramp_months']} mo. "
+            f"Re-fit with `python -m src.calibrate_prepayment --data your_loans.csv "
+            f"--out data/calibrated_prepayment_params.json`."
         )
 
         from src.cpr_calibration import (
@@ -1626,6 +1692,13 @@ with tab_kr:
             historical_regimes_dataframe,
             format_refi_incentive_bp,
             incentive_bp,
+        )
+        from src.mbs_pricing import (
+            DEFAULT_SEASONING_RAMP_MONTHS,
+            step_a_mortgage_rate,
+            step_b_cpr,
+            cpr_to_psa,
+            terms_from_instrument,
         )
 
         _oa = [a for a in assets if getattr(a, "is_option_adjusted", False)]
@@ -1640,44 +1713,60 @@ with tab_kr:
                 int(
                     getattr(a, "age_months", None)
                     or getattr(a, "pool_age_months", None)
-                    or 30
+                    or 0
                 )
                 for a in _oa
             ]
             _age = int(round(sum(_ages) / len(_ages)))
             _top = max(_oa, key=lambda a: float(a.notional))
-            _anchor = float(getattr(_top, "anchor_tenor", 7.0) or 7.0)
-            _spread = float(getattr(_top, "spread_to_curve", 0.0) or 0.0)
-            _mtg_dec = float(curve.rate(_anchor)) + _spread
-            _pmms_pct = _mtg_dec * 100.0 if _mtg_dec <= 1.0 else _mtg_dec
+            _terms = terms_from_instrument(_top)
+            _mtg, _inc_pp = step_a_mortgage_rate(curve, _terms)
+            _pmms_pct = _mtg * 100.0
+            _cpr_live = step_b_cpr(_terms, _inc_pp, float(_terms.pool_age_months) + 1.0)
+            _cpr_seas = step_b_cpr(_terms, _inc_pp, 60.0)
+            _oas_bp = float(_terms.oas) * 10_000.0
+            _ramp = int(_terms.seasoning_ramp_months or DEFAULT_SEASONING_RAMP_MONTHS)
+            st.info(
+                f"**Largest OA pool example (`{_terms.name or _top.name}`):** "
+                f"WAC {_wac_pct:.2f}% · mortgage rate {_pmms_pct:.2f}% · "
+                f"refi incentive {_inc_pp:+.2f} pp · pool age {_terms.pool_age_months} mo · "
+                f"seasoning ramp {_ramp} mo · "
+                f"CPR now {_cpr_live * 100:.1f}% / seasoned {_cpr_seas * 100:.1f}% "
+                f"(≈ {cpr_to_psa(_cpr_seas):.0f} PSA) · "
+                f"OAS {_oas_bp:.0f} bp (discount only)."
+            )
         else:
             _wac_pct, _pmms_pct, _age = 5.50, 6.50, 30
+            st.caption(
+                "No option-adjusted MBS / whole loans on the sheet — "
+                "illustrative WAC/mortgage defaults used for the documentation tables only."
+            )
 
         _inc0 = incentive_bp(_wac_pct, _pmms_pct)
         st.caption(
-            f"Reference inputs from OA book (balance-sheet WAC / curve+spread): "
-            f"WAC **{_wac_pct:.2f}%**, mortgage rate **{_pmms_pct:.2f}%**, "
-            f"seasoning **{_age}** mo → base refi incentive "
-            f"**{format_refi_incentive_bp(_inc0)}**."
+            f"Documentation tables use book-weighted WAC **{_wac_pct:.2f}%** and "
+            f"implied mortgage **{_pmms_pct:.2f}%** "
+            f"(refi incentive {format_refi_incentive_bp(_inc0)} in bp for the knot chart). "
+            f"Average pool age ≈ **{_age}** months."
         )
 
         _calib = calibrate_scenario_cprs(
             CprCalibrationInputs(
                 wac_pct=float(_wac_pct),
                 pmms_pct=float(_pmms_pct),
-                age_months=int(_age),
+                age_months=max(int(_age), 1),
             )
         )
         sc1, sc2 = st.columns(2)
         with sc1:
-            st.markdown("**S-curve knots (refi incentive → CPR %)**")
+            st.markdown("**ALCO reference — agency S-curve knots (not live pricing)**")
             st.dataframe(
                 scurve_display_frame()[["Refi incentive", "CPR %"]],
                 use_container_width=True,
                 hide_index=True,
             )
         with sc2:
-            st.markdown("**BASE + BCBS scenario CPR / PSA (from S-curve)**")
+            st.markdown("**ALCO reference — scenario CPR / PSA map (not live pricing)**")
             st.dataframe(
                 calibration_display_frame(_calib),
                 use_container_width=True,
@@ -1707,10 +1796,14 @@ with tab_kr:
             **PLOTLY_BASE, height=340,
             xaxis=dict(
                 **AXIS_STYLE,
-                title="Refi incentive (WAC − mtg), bp  (+ ITM / − OTM)",
+                title="Refi incentive (documentation, bp)  (+ ITM / − OTM)",
             ),
-            yaxis=dict(**AXIS_STYLE, title="CPR %"),
+            yaxis=dict(**AXIS_STYLE, title="Illustrative CPR % (agency knots)"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, bgcolor=BG2),
+            title=dict(
+                text="ALCO reference only — live pricing uses logistic CPR × seasoning",
+                font=dict(size=12, color=DIM),
+            ),
         )
         st.plotly_chart(fig_sc, use_container_width=True)
 

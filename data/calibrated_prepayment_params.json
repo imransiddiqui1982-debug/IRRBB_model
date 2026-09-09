@@ -1,0 +1,13 @@
+{
+  "base_turnover": 0.05545,
+  "max_refi_cpr": 0.33981,
+  "logistic_k": 2.26596,
+  "logistic_midpoint": 0.57559,
+  "n_observations": 178434,
+  "n_buckets": 23,
+  "rmse": 0.01785,
+  "r_squared": 0.97008,
+  "source": "synthetic_validation",
+  "seasoning_ramp_months": 28,
+  "note": "Recovered from synthetic loan panel (validate mode). Replace by fitting Freddie Mac / bank loan-level history: python -m src.calibrate_prepayment --data your_extract.csv --out data/calibrated_prepayment_params.json"
+}
