@@ -1229,7 +1229,9 @@ with tab1:
             texttemplate="%{text}",
             hoverongaps=False,
         ))
-        fig_h.update_layout(**PLOTLY_BASE, height=220, margin=dict(l=80, r=20, t=20, b=40))
+        fig_h.update_layout(
+            **{**PLOTLY_BASE, "height": 220, "margin": dict(l=80, r=20, t=20, b=40)},
+        )
         st.plotly_chart(fig_h, use_container_width=True)
 
         st.markdown("<p class='section-label'>Exception view</p>", unsafe_allow_html=True)
