@@ -20,7 +20,10 @@ import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from src.balance_sheet import get_instruments  # noqa: E402
-from src.load_balance_sheet import load_instruments_from_csv  # noqa: E402
+from src.load_balance_sheet import (  # noqa: E402
+    instruments_to_dataframe,
+    load_instruments_from_csv,
+)
 from src.nmd_refinement import refine_nmd_deposits, merge_nmd_into_balance_sheet, load_customer_nmd  # noqa: E402
 from src.calculator import IRRBBCalculator  # noqa: E402
 from src.key_rate_duration import (  # noqa: E402
@@ -30,9 +33,22 @@ from src.key_rate_duration import (  # noqa: E402
 )
 from src.liquidity_ratios import compute_liquidity_ratios_with_workbook  # noqa: E402
 from src.market_curve import get_live_yield_curve  # noqa: E402
-from src.scenarios import SCENARIOS, REF_LABELS  # noqa: E402
+from src.scenarios import SCENARIOS, REF_LABELS, Scenario  # noqa: E402
 from src.time_buckets import BUCKET_LABELS, N_BUCKETS  # noqa: E402
 from src.yield_curve import YieldCurve  # noqa: E402
+from src.ui_helpers import (  # noqa: E402
+    DOCS_MARKDOWN,
+    apply_whatif_wac,
+    available_packs,
+    build_export_zip,
+    custom_scenario,
+    dataframe_to_csv_bytes,
+    exception_rows,
+    filter_instruments_df,
+    scenario_heatmap_frame,
+    style_delta_columns,
+    validate_balance_sheet_bytes,
+)
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -317,8 +333,11 @@ hr {{
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SIDEBAR
+#  SIDEBAR — assumptions & uploads
 # ══════════════════════════════════════════════════════════════════════════════
+
+PACKS = available_packs()
+PACK_BY_KEY = {p.key: p for p in PACKS}
 
 with st.sidebar:
     st.markdown(
@@ -331,111 +350,131 @@ with st.sidebar:
     )
     st.divider()
 
-    st.markdown("<p class='section-label'>Regulatory Parameters</p>",
+    expert_mode = st.toggle("Expert mode (full tables)", value=False, key="expert_mode")
+
+    st.markdown("<p class='section-label'>1 · Template pack</p>",
+                unsafe_allow_html=True)
+    pack_label = st.selectbox(
+        "Starting book",
+        [p.label for p in PACKS],
+        index=0,
+        help="Loads a sample balance sheet (and NMD workbook when available).",
+    )
+    pack = next(p for p in PACKS if p.label == pack_label)
+    st.caption(pack.description)
+
+    st.markdown("<p class='section-label'>2 · Regulatory</p>",
                 unsafe_allow_html=True)
     tier1 = st.number_input(
         "Tier 1 Capital (USD M)",
         value=500, min_value=50, max_value=10000, step=50,
     )
-    st.markdown(
-        f"<div style='font-size:11px;line-height:1.8;margin-top:4px'>"
-        f"<span style='color:{SIDEBAR_DIM}'>Outlier threshold: </span>"
-        f"<span style='color:{SIDEBAR_TEXT};font-weight:600;font-family:monospace'>"
-        f"${tier1 * 0.15:.0f}M</span>"
-        f"<span style='color:{SIDEBAR_DIM}'> (15% of T1)</span><br>"
-        f"<span style='color:{SIDEBAR_DIM}'>Watch threshold: </span>"
-        f"<span style='color:{SIDEBAR_TEXT};font-weight:600;font-family:monospace'>"
-        f"${tier1 * 0.10:.0f}M</span>"
-        f"<span style='color:{SIDEBAR_DIM}'> (10% of T1)</span>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-
-    st.divider()
-
-    # ── Two uploads only ──────────────────────────────────────────────────────
-    st.markdown("<p class='section-label'>Data uploads</p>",
-                unsafe_allow_html=True)
+    outlier_pct = st.slider("Outlier |ΔEVE|/T1 %", 10, 20, 15, 1)
+    watch_pct = st.slider("Watch |ΔEVE|/T1 %", 5, 15, 10, 1)
     st.caption(
-        "Upload your files, or leave blank to run on built-in samples."
+        f"Limits: watch ${tier1 * watch_pct / 100:.0f}M · "
+        f"outlier ${tier1 * outlier_pct / 100:.0f}M"
     )
 
-    bs_template_path = os.path.join(os.path.dirname(__file__), "data", "balance_sheet_template.csv")
-    if not os.path.exists(bs_template_path):
-        bs_template_path = os.path.join(os.path.dirname(__file__), "data", "sample_balance_sheet.csv")
-    lcr_nsfr_path = os.path.join(os.path.dirname(__file__), "data", "us_lcr_nsfr_deposit_model.xlsx")
-    if not os.path.exists(lcr_nsfr_path):
-        lcr_nsfr_path = os.path.join(
-            os.path.dirname(__file__), "data", "comprehensive_deposit_template_v2.xlsx"
-        )
+    st.markdown("<p class='section-label'>3 · Data uploads</p>",
+                unsafe_allow_html=True)
+    st.caption("Leave blank to use the selected template pack.")
+
+    bs_template_path = str(pack.bs_path)
+    lcr_nsfr_path = str(pack.nmd_path) if pack.nmd_path else ""
 
     uploaded_csv = st.file_uploader(
-        "1. Balance sheet CSV",
+        "Balance sheet CSV",
         type=["csv"],
         key="upload_balance_sheet",
-        help=(
-            "All banking-book instruments (assets & liabilities). "
-            "One row per instrument — use the template for columns."
-        ),
     )
-    if os.path.exists(bs_template_path):
-        with open(bs_template_path, "rb") as f:
+    if pack.bs_path.exists():
+        with open(pack.bs_path, "rb") as f:
             st.download_button(
-                "⬇ Balance sheet template",
+                "⬇ Pack balance sheet",
                 f.read(),
-                file_name="balance_sheet_template.csv",
+                file_name=pack.bs_path.name,
                 mime="text/csv",
                 use_container_width=True,
                 key="dl_bs_template",
             )
 
     uploaded_lcr_nsfr = st.file_uploader(
-        "2. LCR / NSFR + NMD workbook",
+        "LCR / NSFR + NMD workbook",
         type=["xlsx", "xls"],
         key="upload_lcr_nsfr",
-        help=(
-            "Deposit history (NMD core / non-core / sticky), HQLA, "
-            "LCR outflows/inflows, and NSFR ASF/RSF in one workbook."
-        ),
     )
-    if os.path.exists(lcr_nsfr_path):
-        with open(lcr_nsfr_path, "rb") as f:
+    if pack.nmd_path and pack.nmd_path.exists():
+        with open(pack.nmd_path, "rb") as f:
             st.download_button(
                 "⬇ LCR/NSFR + NMD template",
                 f.read(),
-                file_name="us_lcr_nsfr_deposit_model.xlsx",
+                file_name=pack.nmd_path.name,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
                 key="dl_lcr_nsfr_template",
             )
 
     deposit_name = "Retail NMD"
-    # Resolved after uploads: sample used when uploader empty
-    use_nmd = True
 
-    st.divider()
-
-    st.markdown("<p class='section-label'>Yield Curve</p>",
+    st.markdown("<p class='section-label'>4 · Curve & PMMS</p>",
                 unsafe_allow_html=True)
     use_live_curve = st.checkbox(
-        "Use live SOFR + USD IRS mid curve",
+        "Live SOFR + USD IRS mid curve",
         value=True,
-        help="0–12M: SOFR (NY Fed + SOFR swap tenors). 1Y–10Y: USD SOFR IRS mids.",
+        help="0–12M SOFR; 1Y–10Y USD SOFR IRS mids.",
     )
     refresh_curve = st.button("Refresh live curve", use_container_width=True)
+    lock_pmms = st.checkbox("Override PMMS % (manual)", value=False)
+    pmms_override_pct = st.number_input(
+        "PMMS %", value=6.71, min_value=0.0, max_value=20.0, step=0.01,
+        disabled=not lock_pmms,
+    )
+    curve_paste = st.text_area(
+        "Optional curve override (tenor_years,rate_pct per line)",
+        value="",
+        height=70,
+        help="Example:\n0.25,5.10\n1,4.80\n10,4.40",
+        placeholder="Leave blank to use live / stylised curve",
+    )
 
-    st.divider()
-
-    st.markdown("<p class='section-label'>Active Scenario</p>",
+    st.markdown("<p class='section-label'>5 · NII assumptions</p>",
                 unsafe_allow_html=True)
+    nii_horizon = st.selectbox("NII horizon (months)", [12, 24], index=0)
+    nii_constant_bs = st.checkbox(
+        "Constant balance sheet (reinvest runoff)",
+        value=True,
+        help="BCBS default. Uncheck = static (no reinvestment).",
+    )
+    nii_us_mode = st.checkbox("US NII shock set (±100…400 + ramps)", value=False)
+
+    st.markdown("<p class='section-label'>6 · Active scenario</p>",
+                unsafe_allow_html=True)
+    use_custom_shocks = st.checkbox("Custom pillar shocks", value=False)
     selected_name = st.radio(
         "scenario", [s.name for s in SCENARIOS],
         label_visibility="collapsed",
+        disabled=use_custom_shocks,
     )
     selected_scenario = next(s for s in SCENARIOS if s.name == selected_name)
 
+    custom_shocks: list[int] = []
+    if use_custom_shocks:
+        st.caption("Edit pillar shocks (bp) — used for detail / what-if views.")
+        cols_sh = st.columns(3)
+        for i, lab in enumerate(REF_LABELS):
+            with cols_sh[i % 3]:
+                custom_shocks.append(
+                    int(st.number_input(
+                        lab, value=int(selected_scenario.ref_shocks_bp[i]),
+                        step=25, key=f"custom_sh_{lab}",
+                    ))
+                )
+        selected_scenario = custom_scenario("Custom", custom_shocks)
+        selected_name = selected_scenario.name
+
     st.divider()
-    st.markdown("<p class='section-label'>Shock Profile</p>",
+    st.markdown("<p class='section-label'>Shock profile</p>",
                 unsafe_allow_html=True)
     for label, bp in zip(REF_LABELS, selected_scenario.ref_shocks_bp):
         color = GREEN if bp > 0 else (RED if bp < 0 else DIM)
@@ -455,8 +494,7 @@ with st.sidebar:
 
 @st.cache_data(ttl=300)
 def load_market_curve(force_refresh: bool = False):
-    """Fetch live SOFR / IRS curve (cached 5 minutes)."""
-    _ = force_refresh  # changes cache key when Refresh is clicked
+    _ = force_refresh
     return get_live_yield_curve(use_cache_on_failure=True)
 
 
@@ -469,7 +507,10 @@ def run_model(
     use_nmd: bool,
     curve_tenors: tuple[float, ...] | None,
     curve_rates: tuple[float, ...] | None,
-    _model_version: int = 15,
+    pmms_rate_override: float | None,
+    outlier_thr: float,
+    watch_thr: float,
+    _model_version: int = 16,
 ):
     if csv_bytes:
         assets, liabilities = load_instruments_from_csv(io.BytesIO(csv_bytes))
@@ -488,17 +529,21 @@ def run_model(
     else:
         curve = YieldCurve()
 
-    # Step A: anchor OA mortgage rate to live FRED PMMS 30Y
     from src.mbs_pricing import apply_pmms_anchor
-    pmms_meta = apply_pmms_anchor(list(assets) + list(liabilities), curve)
+    pmms_meta = apply_pmms_anchor(
+        list(assets) + list(liabilities),
+        curve,
+        pmms_rate=pmms_rate_override,
+    )
 
-    # OA MBS / whole loans use per-instrument WAC + PMMS-anchored spread
     calc = IRRBBCalculator(
         assets,
         liabilities,
         tier1_capital=tier1_cap,
         yield_curve=curve,
         cpr_table=None,
+        outlier_threshold=outlier_thr,
+        watch_threshold=watch_thr,
     )
     results = calc.run_all(SCENARIOS)
     gap = calc.repricing_gap()
@@ -510,55 +555,114 @@ def run_model(
     )
 
 
-# Live / stylised curve for EVE-NII discounting
+def _parse_curve_paste(text: str) -> tuple[tuple[float, ...], tuple[float, ...]] | None:
+    text = (text or "").strip()
+    if not text:
+        return None
+    tenors, rates = [], []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = re.split(r"[,;\s]+", line)
+        if len(parts) < 2:
+            continue
+        tenors.append(float(parts[0]))
+        r = float(parts[1])
+        rates.append(r / 100.0 if r > 1.0 else r)
+    if len(tenors) < 2:
+        return None
+    order = np.argsort(tenors)
+    return tuple(tenors[i] for i in order), tuple(rates[i] for i in order)
+
+
+# Resolve curve
 curve_snap = None
 curve_tenors_t: tuple[float, ...] | None = None
 curve_rates_t: tuple[float, ...] | None = None
-if use_live_curve:
+curve_source_label = "stylised"
+pasted = _parse_curve_paste(curve_paste)
+if pasted is not None:
+    curve_tenors_t, curve_rates_t = pasted
+    curve_source_label = "manual paste"
+elif use_live_curve:
     try:
         live_curve, curve_snap = load_market_curve(force_refresh=bool(refresh_curve))
         tenors = sorted(curve_snap.points.keys())
         curve_tenors_t = tuple(tenors)
         curve_rates_t = tuple(curve_snap.points[t] for t in tenors)
-        st.sidebar.success(
-            f"Live curve as of {curve_snap.as_of}"
-        )
+        curve_source_label = f"live @ {curve_snap.as_of}"
+        st.sidebar.success(f"Live curve as of {curve_snap.as_of}")
         for note in curve_snap.source_notes[:3]:
             st.sidebar.caption(note)
     except Exception as exc:
-        st.sidebar.warning(f"Live curve unavailable — using stylised curve. ({exc})")
+        st.sidebar.warning(f"Live curve unavailable — stylised. ({exc})")
         use_live_curve = False
+        curve_source_label = "stylised (fallback)"
 
-csv_payload = None
-bs_source_label = "built-in sample"
+# Resolve balance sheet bytes (pack / upload / session edit)
+if "bs_csv_bytes" not in st.session_state:
+    st.session_state.bs_csv_bytes = None
+if "bs_editor_rev" not in st.session_state:
+    st.session_state.bs_editor_rev = 0
+if "pack_key_loaded" not in st.session_state:
+    st.session_state.pack_key_loaded = None
+
+# Reload pack when selection changes (unless user uploaded a file this session)
 if uploaded_csv is not None:
     csv_payload = uploaded_csv.getvalue()
     bs_source_label = uploaded_csv.name
-elif os.path.exists(bs_template_path):
-    with open(bs_template_path, "rb") as f:
-        csv_payload = f.read()
-    bs_source_label = os.path.basename(bs_template_path)
+    st.session_state.bs_csv_bytes = csv_payload
+    st.session_state.pack_key_loaded = f"upload:{uploaded_csv.name}"
+elif (
+    st.session_state.bs_csv_bytes is not None
+    and st.session_state.pack_key_loaded == pack.key
+):
+    csv_payload = st.session_state.bs_csv_bytes
+    bs_source_label = f"edited · {pack.bs_path.name}"
+elif pack.bs_path.exists():
+    csv_payload = pack.bs_path.read_bytes()
+    bs_source_label = pack.bs_path.name
+    st.session_state.bs_csv_bytes = csv_payload
+    st.session_state.pack_key_loaded = pack.key
+else:
+    csv_payload = None
+    bs_source_label = "built-in sample"
 
 nmd_payload = None
-nmd_source_label = "built-in sample"
+nmd_source_label = "none"
 if uploaded_lcr_nsfr is not None:
     nmd_payload = uploaded_lcr_nsfr.getvalue()
     nmd_source_label = uploaded_lcr_nsfr.name
-elif os.path.exists(lcr_nsfr_path):
-    with open(lcr_nsfr_path, "rb") as f:
-        nmd_payload = f.read()
-    nmd_source_label = os.path.basename(lcr_nsfr_path)
+elif pack.nmd_path and pack.nmd_path.exists():
+    nmd_payload = pack.nmd_path.read_bytes()
+    nmd_source_label = pack.nmd_path.name
 
 use_nmd = nmd_payload is not None
-if use_nmd:
-    st.sidebar.caption(f"Balance sheet: {bs_source_label}")
-    st.sidebar.caption(f"LCR/NSFR + NMD: {nmd_source_label}")
-else:
-    st.sidebar.caption(f"Balance sheet: {bs_source_label}")
-    st.sidebar.warning("No LCR/NSFR + NMD workbook found — NMD refinement skipped.")
+st.sidebar.caption(f"BS: {bs_source_label}")
+st.sidebar.caption(f"NMD/LCR: {nmd_source_label}")
 
-# pmms_meta filled after run_model
+# Validate
+_bs_df_preview, _bs_issues = (None, [])
+if csv_payload:
+    _bs_df_preview, _bs_issues = validate_balance_sheet_bytes(csv_payload)
+_hard_errors = [i for i in _bs_issues if i["severity"] == "error"]
+
+pmms_override = (pmms_override_pct / 100.0) if lock_pmms else None
+
 pmms_meta: dict = {}
+_run_ok = False
+calc = results = gap = maturity_gap = dv01_gap = None
+assets, liabilities, nmd_result = [], [], None
+curve = YieldCurve()
+
+if _hard_errors:
+    st.warning(
+        "Balance sheet validation issues — see **Inputs** tab. "
+        "Attempting to run anyway if the CSV still loads."
+    )
+    for iss in _hard_errors[:5]:
+        st.caption(f"• [{iss['column'] or 'file'}] {iss['message']}")
 
 try:
     (
@@ -572,138 +676,311 @@ try:
         use_nmd,
         curve_tenors_t,
         curve_rates_t,
+        pmms_override,
+        outlier_pct / 100.0,
+        watch_pct / 100.0,
     )
+    _run_ok = True
 except UnicodeDecodeError:
-    st.error(
-        "File encoding error: use a **CSV** for the balance sheet and an "
-        "**Excel (.xlsx)** workbook for LCR/NSFR + NMD."
-    )
+    st.error("File encoding error: use CSV for BS and Excel for LCR/NSFR + NMD.")
     st.stop()
-except ValueError as exc:
-    st.error(str(exc))
-    st.stop()
+except Exception as exc:
+    st.error(f"Model run failed: {exc}")
+    # keep Inputs usable
+    _run_ok = False
 
 if pmms_meta.get("pmms_rate") is not None:
     st.sidebar.success(
-        f"PMMS anchor: {pmms_meta['pmms_rate'] * 100:.2f}% "
-        f"({pmms_meta.get('as_of', 'n/a')}) · "
-        f"{pmms_meta.get('applied', 0)} OA pools"
+        f"PMMS: {pmms_meta['pmms_rate'] * 100:.2f}% "
+        f"({pmms_meta.get('as_of', 'n/a')}) · {pmms_meta.get('applied', 0)} OA pools"
     )
 elif pmms_meta.get("error"):
-    st.sidebar.caption(f"PMMS unavailable — using sheet spreads ({pmms_meta['error']})")
+    st.sidebar.caption(f"PMMS unavailable — sheet spreads ({pmms_meta['error']})")
 
-active = next(r for r in results if r.scenario.name == selected_name)
-detail = calc.instrument_eve_detail(selected_scenario)
-nmd_customers = None
-if nmd_payload:
-    try:
-        nmd_customers = load_customer_nmd(io.BytesIO(nmd_payload)).customers
-    except Exception:
-        nmd_customers = None
-workbook_src = io.BytesIO(nmd_payload) if nmd_payload else None
-liquidity = compute_liquidity_ratios_with_workbook(
-    assets,
-    liabilities,
-    workbook_src,
-    nmd_result=nmd_result,
-    customers=nmd_customers,
-    tier1_capital=float(tier1),
-)
-lcr_result = liquidity.lcr
-nsfr_result = liquidity.nsfr
+active = None
+detail = None
+liquidity = None
+lcr_result = None
+nsfr_result = None
+if _run_ok and calc is not None and results:
+    # Map custom scenario onto nearest named result for dashboards that need SCENARIOS
+    if selected_scenario.id == "CUSTOM":
+        active = results[0]
+        # Recompute detail under custom shocks
+        try:
+            detail = calc.instrument_eve_detail(selected_scenario)
+        except Exception:
+            detail = calc.instrument_eve_detail(results[0].scenario)
+            selected_scenario = results[0].scenario
+    else:
+        active = next(r for r in results if r.scenario.name == selected_name)
+        detail = calc.instrument_eve_detail(selected_scenario)
 
+    nmd_customers = None
+    if nmd_payload:
+        try:
+            nmd_customers = load_customer_nmd(io.BytesIO(nmd_payload)).customers
+        except Exception:
+            nmd_customers = None
+    workbook_src = io.BytesIO(nmd_payload) if nmd_payload else None
+    liquidity = compute_liquidity_ratios_with_workbook(
+        assets,
+        liabilities,
+        workbook_src,
+        nmd_result=nmd_result,
+        customers=nmd_customers,
+        tier1_capital=float(tier1),
+    )
+    lcr_result = liquidity.lcr
+    nsfr_result = liquidity.nsfr
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  HEADER
+#  RUN STATUS STRIP
 # ══════════════════════════════════════════════════════════════════════════════
 
 st.markdown(
     f"<h2 style='font-size:20px;letter-spacing:0.5px;margin-bottom:2px'>"
     f"Interest Rate Risk in the Banking Book</h2>"
     f"<p style='color:{DIM};font-size:11px;margin-top:0'>"
-    f"BCBS 368 (April 2016) · 19 Repricing Buckets · "
-    f"Full Cash Flow Discounting · 6 Prescribed Scenarios · "
-    f"MBS / mortgage OA prepay (balance-sheet WAC)</p>",
+    f"Upload → Validate → Edit → Assumptions → Run → Dashboard → Export</p>",
     unsafe_allow_html=True,
 )
-st.divider()
 
-total_a = sum(i.notional for i in assets)
-total_l = sum(i.notional for i in liabilities)
-total_cf = sum(len(i.cashflows) for i in assets + liabilities)
-outliers = sum(1 for r in results if r.is_outlier)
-watches = sum(1 for r in results if r.is_watch)
-worst = max(results, key=lambda r: r.delta_eve_pct)
+total_a = sum(i.notional for i in assets) if assets else 0.0
+total_l = sum(i.notional for i in liabilities) if liabilities else 0.0
+outliers = sum(1 for r in results if r.is_outlier) if results else 0
+watches = sum(1 for r in results if r.is_watch) if results else 0
+worst = max(results, key=lambda r: r.delta_eve_pct) if results else None
+worst_nii = min(results, key=lambda r: r.delta_nii) if results else None
+
+status_color = GREEN if _run_ok and outliers == 0 else (AMBER if _run_ok else RED)
+status_txt = "READY" if _run_ok and outliers == 0 else ("WATCH / OUTLIER" if _run_ok else "BLOCKED")
+pmms_txt = (
+    f"{pmms_meta['pmms_rate'] * 100:.2f}%"
+    if pmms_meta.get("pmms_rate") is not None else "n/a"
+)
+
+worst_eve_txt = f"{worst.delta_eve_pct:.1f}%" if worst else "—"
+worst_nii_txt = f"${worst_nii.delta_nii:+.1f}M" if worst_nii else "—"
+st.markdown(
+    f"<div style='background:{BG3};border:1px solid {BORDER};border-radius:8px;"
+    f"padding:10px 14px;margin:8px 0 12px;display:flex;flex-wrap:wrap;gap:18px;"
+    f"align-items:center;font-size:12px'>"
+    f"<span><b style='color:{status_color}'>{status_txt}</b></span>"
+    f"<span style='color:{DIM}'>Curve</span> <b>{curve_source_label}</b>"
+    f"<span style='color:{DIM}'>PMMS</span> <b>{pmms_txt}</b>"
+    f"<span style='color:{DIM}'>BS</span> <b>{bs_source_label}</b>"
+    f"<span style='color:{DIM}'>Assets</span> <b>${total_a:,.0f}M</b>"
+    f"<span style='color:{DIM}'>Liab</span> <b>${total_l:,.0f}M</b>"
+    f"<span style='color:{DIM}'>Outliers</span> <b>{outliers}</b>"
+    f"<span style='color:{DIM}'>Worst |ΔEVE|/T1</span> <b>{worst_eve_txt}</b>"
+    f"<span style='color:{DIM}'>Worst ΔNII</span> <b>{worst_nii_txt}</b>"
+    f"</div>",
+    unsafe_allow_html=True,
+)
 
 c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.metric("Total Assets",       f"${total_a:,.0f}M")
-c2.metric("Total Liabilities",  f"${total_l:,.0f}M")
-c3.metric("Scheduled CFs",      f"{total_cf:,}")
-c4.metric("Tier 1 Capital",     f"${tier1:,.0f}M")
+c1.metric("Total Assets", f"${total_a:,.0f}M")
+c2.metric("Total Liabilities", f"${total_l:,.0f}M")
+c3.metric("Tier 1", f"${tier1:,.0f}M")
+c4.metric("Outliers", str(outliers))
 c5.metric(
-    "Outlier Breaches", str(outliers),
-    delta="None ✓" if outliers == 0 else f"{outliers} breach(es)",
-    delta_color="normal" if outliers == 0 else "inverse",
-)
-c6.metric(
     "Worst |ΔEVE|/T1",
-    f"{worst.delta_eve_pct:.1f}%",
-    delta=worst.scenario.name,
+    f"{worst.delta_eve_pct:.1f}%" if worst else "—",
+    delta=worst.scenario.name if worst else None,
     delta_color="off",
 )
+c6.metric(
+    "Worst ΔNII",
+    f"${worst_nii.delta_nii:+.1f}M" if worst_nii else "—",
+)
 
-# Live option-adjusted prepayment diagnostics (spec §6)
-try:
-    from src.mbs_pricing import prepayment_diagnostics
-    from src.key_rate_duration import shocked_yield_curve
-    _oa_assets = [a for a in assets if getattr(a, "is_option_adjusted", False)]
-    if _oa_assets:
-        with st.expander(
-            "Prepayment diagnostics — live OA (balance-sheet WAC → CPR → WAL)",
-            expanded=True,
-        ):
-            st.caption(
-                "Per pool from balance-sheet WAC / spread / aging and the active curve "
-                "(Steps A/B/C). Drives EVE and KR01 for MBS / whole loans."
-            )
-            _diag_rows = []
-            _diag_rows.append(
-                prepayment_diagnostics(_oa_assets, curve, "Base")
-            )
-            for _sc in SCENARIOS:
-                _scurve = shocked_yield_curve(curve, _sc.shocks_bp, scenario=_sc)
-                _diag_rows.append(
-                    prepayment_diagnostics(_oa_assets, _scurve, _sc.name)
+# Export + prepay diag
+_exp_c1, _exp_c2 = st.columns([1, 3])
+with _exp_c1:
+    if _run_ok and results:
+        try:
+            from src.key_rate_duration import compute_kr01
+            _kr_ex = compute_kr01(assets, liabilities, curve)
+            _nii_ex = pd.DataFrame(
+                calc.nii_sensitivity_grid(
+                    us_mode=bool(nii_us_mode),
+                    horizon_months=int(nii_horizon),
+                    constant_balance_sheet=bool(nii_constant_bs),
                 )
-            _diag = pd.concat(_diag_rows, ignore_index=True)
-            st.dataframe(_diag, use_container_width=True, hide_index=True)
-except Exception:
-    pass
+            )
+            _zip = build_export_zip(
+                instruments_df=instruments_to_dataframe(assets, liabilities),
+                results_df=scenario_heatmap_frame(results),
+                curve_df=pd.DataFrame({
+                    "tenor_years": list(getattr(curve, "_ref_tenors", [])),
+                    "rate": list(getattr(curve, "_ref_rates", [])),
+                }),
+                kr01_df=_kr_ex,
+                nii_df=_nii_ex,
+                meta={
+                    "tier1": tier1,
+                    "curve_source": curve_source_label,
+                    "pmms": pmms_txt,
+                    "outliers": outliers,
+                    "worst_eve_pct": worst.delta_eve_pct if worst else None,
+                    "pack": pack.label,
+                },
+            )
+            st.download_button(
+                "⬇ Export pack (ZIP)",
+                _zip,
+                file_name="irrbb_run_export.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+        except Exception as _ex:
+            st.caption(f"Export unavailable: {_ex}")
+
+if _run_ok and expert_mode:
+    try:
+        from src.mbs_pricing import prepayment_diagnostics
+        from src.key_rate_duration import shocked_yield_curve
+        _oa_assets = [a for a in assets if getattr(a, "is_option_adjusted", False)]
+        if _oa_assets:
+            with st.expander("Prepayment diagnostics (OA)", expanded=False):
+                _diag_rows = [prepayment_diagnostics(_oa_assets, curve, "Base")]
+                for _sc in SCENARIOS:
+                    _scurve = shocked_yield_curve(curve, _sc.shocks_bp, scenario=_sc)
+                    _diag_rows.append(prepayment_diagnostics(_oa_assets, _scurve, _sc.name))
+                st.dataframe(pd.concat(_diag_rows, ignore_index=True),
+                             use_container_width=True, hide_index=True)
+    except Exception:
+        pass
 
 st.divider()
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TABS
 # ══════════════════════════════════════════════════════════════════════════════
 
-tab0, tab_lcr, tab1, tab2, tab3, tab4, tab5, tab_kr, tab6 = st.tabs([
+(
+    tab_in, tab0, tab_lcr, tab1, tab2, tab3, tab4, tab5, tab_kr, tab6, tab_docs,
+) = st.tabs([
+    "Inputs",
     "NMD Refinement",
     "LCR / NSFR",
-    "All Scenarios",
+    "Dashboard",
     "Scenario Detail",
     "EVE Waterfall",
     "Scenario Comparison",
     "Repricing Gap",
     "ALCO / KR01 / Hedges",
     "Yield Curve",
+    "Docs",
 ])
 
+# ── TAB: Inputs (editor, validation, what-if) ─────────────────────────────────
+with tab_in:
+    st.markdown("<p class='section-label'>Balance sheet editor</p>",
+                unsafe_allow_html=True)
+    st.caption(
+        "Edit notionals, coupons, WAC, OAS, resets. Filter, then **Apply edits & Run**. "
+        "Optional columns: `book`, `currency` for filtering."
+    )
+    if _bs_issues:
+        st.dataframe(pd.DataFrame(_bs_issues), use_container_width=True, hide_index=True)
+
+    if csv_payload:
+        _edit_df = pd.read_csv(io.BytesIO(csv_payload))
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            _side_f = st.selectbox("Side", ["All", "asset", "liability"], key="filt_side")
+        with f2:
+            _types = ["All"] + sorted(_edit_df["instrument_type"].astype(str).str.lower().unique())
+            _type_f = st.selectbox("Type", _types, key="filt_type")
+        with f3:
+            _q = st.text_input("Name contains", "", key="filt_name")
+        _view = filter_instruments_df(_edit_df, side=_side_f, itype=_type_f, name_query=_q)
+        st.caption(f"Showing {len(_view)} / {len(_edit_df)} rows")
+        edited = st.data_editor(
+            _view,
+            use_container_width=True,
+            num_rows="dynamic",
+            key=f"bs_editor_{st.session_state.bs_editor_rev}",
+            height=360,
+        )
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("Apply edits & Run", type="primary", use_container_width=True):
+                # Merge edited rows back by name where possible
+                base = _edit_df.copy()
+                if "name" in edited.columns and "name" in base.columns:
+                    for _, row in edited.iterrows():
+                        m = base["name"].astype(str) == str(row["name"])
+                        if m.any():
+                            for col in edited.columns:
+                                if col in base.columns:
+                                    base.loc[m, col] = row[col]
+                    # append new names
+                    new_names = set(edited["name"].astype(str)) - set(base["name"].astype(str))
+                    if new_names:
+                        base = pd.concat(
+                            [base, edited[edited["name"].astype(str).isin(new_names)]],
+                            ignore_index=True,
+                        )
+                else:
+                    base = edited
+                st.session_state.bs_csv_bytes = dataframe_to_csv_bytes(base)
+                st.session_state.bs_editor_rev += 1
+                st.session_state.pack_key_loaded = pack.key
+                st.rerun()
+        with b2:
+            if st.button("Reset to pack / upload", use_container_width=True):
+                st.session_state.bs_csv_bytes = None
+                st.session_state.pack_key_loaded = None
+                st.session_state.bs_editor_rev += 1
+                st.rerun()
+
+        st.markdown("<p class='section-label'>What-if · WAC shock</p>",
+                    unsafe_allow_html=True)
+        _names = list(_edit_df["name"].astype(str))
+        wi1, wi2, wi3 = st.columns([2, 1, 1])
+        with wi1:
+            wi_name = st.selectbox("Instrument", _names, key="whatif_name")
+        with wi2:
+            wi_bp = st.number_input("WAC Δ (bp)", value=50, step=25, key="whatif_bp")
+        with wi3:
+            run_wi = st.button("Compare ΔEVE", use_container_width=True)
+        if run_wi and _run_ok:
+            try:
+                alt_bytes = apply_whatif_wac(csv_payload, wi_name, float(wi_bp))
+                alt = run_model(
+                    float(tier1), alt_bytes, nmd_payload, deposit_name, use_nmd,
+                    curve_tenors_t, curve_rates_t, pmms_override,
+                    outlier_pct / 100.0, watch_pct / 100.0, 16,
+                )
+                base_eve = {r.scenario.id: r.delta_eve for r in results}
+                alt_res = alt[1]
+                rows = []
+                for r in alt_res:
+                    rows.append({
+                        "Scenario": r.scenario.name,
+                        "Base ΔEVE": round(base_eve.get(r.scenario.id, 0.0), 2),
+                        "What-if ΔEVE": round(r.delta_eve, 2),
+                        "Diff": round(r.delta_eve - base_eve.get(r.scenario.id, 0.0), 2),
+                    })
+                st.dataframe(
+                    style_delta_columns(pd.DataFrame(rows), ["Diff"]),
+                    use_container_width=True,
+                )
+            except Exception as exc:
+                st.warning(f"What-if failed: {exc}")
+    else:
+        st.info("No balance sheet loaded.")
 
 # ── TAB 0: NMD refinement ─────────────────────────────────────────────────────
 with tab0:
-    st.markdown("<p class='section-label'>Behavioural NMD Refinement</p>",
-                unsafe_allow_html=True)
+    if not _run_ok:
+        st.info("Run the model from **Inputs** first.")
+    else:
+        st.markdown("<p class='section-label'>Behavioural NMD Refinement</p>",
+                    unsafe_allow_html=True)
     if nmd_result is None:
         st.info(
             "Upload the **LCR / NSFR + NMD workbook** in the sidebar "
@@ -749,433 +1026,446 @@ with tab0:
 
 # ── TAB LCR / NSFR: Liquidity ratios ──────────────────────────────────────────
 with tab_lcr:
-    st.markdown("<p class='section-label'>Basel III Liquidity Ratios — LCR & NSFR</p>",
-                unsafe_allow_html=True)
-    if liquidity.source == "workbook":
-        st.info(
-            "LCR / NSFR computed from **disclosure workbook inputs** "
-            "(HQLA Stock, LCR Cash Outflows/Inflows, NSFR ASF/RSF). "
-            "Deposit outflow rows with auto_from_nmd=Y are filled from NMD bifurcation."
-        )
-        if liquidity.workbook is not None:
-            b = liquidity.workbook.nmd_buckets
-            st.markdown("**NMD deposit buckets (auto-filled rows)**")
-            bc1, bc2, bc3, bc4, bc5 = st.columns(5)
-            bc1.metric("Core sticky", f"${b.core_sticky_m:,.1f}M")
-            bc2.metric("Rate sensitive", f"${b.rate_sensitive_m:,.1f}M")
-            bc3.metric("Non-core retail", f"${b.non_core_volatile_m:,.1f}M")
-            bc4.metric("Wholesale operational", f"${b.wholesale_operational_m:,.1f}M")
-            bc5.metric("Wholesale non-op", f"${b.wholesale_non_op_m:,.1f}M")
+    if not _run_ok or liquidity is None:
+        st.info("Run the model from **Inputs** first.")
     else:
-        st.caption(
-            "Using balance-sheet heuristics. Upload v2 template with liquidity sheets "
-            "for HSBC-style disclosure-driven calculation."
-        )
-    st.dataframe(liquidity.summary, use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.markdown("<p class='section-label'>Liquidity Coverage Ratio (LCR)</p>",
-                unsafe_allow_html=True)
-    st.caption(
-        "LCR = HQLA Stock / Net Cash Outflows (30-day stress) ≥ 100%. "
-        "Inflows capped at 75% of outflows."
-    )
-
-    lcr_color = GREEN if lcr_result.lcr_pass else RED
-    lcr_status = "PASS ✓" if lcr_result.lcr_pass else "FAIL ✗"
-    st.markdown(
-        f"<h3 style='font-size:15px;color:{NAVY}'>"
-        f"LCR = {lcr_result.lcr_pct:.1f}% &nbsp;"
-        f"<span style='font-size:12px;color:{lcr_color};"
-        f"background:{lcr_color}18;padding:3px 10px;"
-        f"border-radius:3px;font-weight:600'>{lcr_status}</span></h3>",
-        unsafe_allow_html=True,
-    )
-
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("HQLA Stock", f"${lcr_result.hqla_stock:,.1f}M")
-    m2.metric("Gross Outflows", f"${lcr_result.total_outflows:,.1f}M")
-    m3.metric("Capped Inflows", f"${lcr_result.capped_inflows:,.1f}M")
-    m4.metric("Net Outflows", f"${lcr_result.net_cash_outflows:,.1f}M")
-    m5.metric("Level 1 HQLA", f"${lcr_result.hqla_level1:,.1f}M")
-
-    col_h, col_o = st.columns(2)
-    with col_h:
-        st.markdown("**HQLA breakdown**")
-        if not lcr_result.hqla_breakdown.empty:
-            st.dataframe(
-                _with_total_row(lcr_result.hqla_breakdown),
-                use_container_width=True,
-                hide_index=True,
+        st.markdown("<p class='section-label'>Basel III Liquidity Ratios ??? LCR & NSFR</p>",
+                    unsafe_allow_html=True)
+        if liquidity.source == "workbook":
+            st.info(
+                "LCR / NSFR computed from **disclosure workbook inputs** "
+                "(HQLA Stock, LCR Cash Outflows/Inflows, NSFR ASF/RSF). "
+                "Deposit outflow rows with auto_from_nmd=Y are filled from NMD bifurcation."
             )
+            if liquidity.workbook is not None:
+                b = liquidity.workbook.nmd_buckets
+                st.markdown("**NMD deposit buckets (auto-filled rows)**")
+                bc1, bc2, bc3, bc4, bc5 = st.columns(5)
+                bc1.metric("Core sticky", f"${b.core_sticky_m:,.1f}M")
+                bc2.metric("Rate sensitive", f"${b.rate_sensitive_m:,.1f}M")
+                bc3.metric("Non-core retail", f"${b.non_core_volatile_m:,.1f}M")
+                bc4.metric("Wholesale operational", f"${b.wholesale_operational_m:,.1f}M")
+                bc5.metric("Wholesale non-op", f"${b.wholesale_non_op_m:,.1f}M")
         else:
-            st.warning("No HQLA-eligible assets identified.")
-    with col_o:
-        st.markdown("**30-day cash outflows**")
-        if not lcr_result.outflow_breakdown.empty:
+            st.caption(
+                "Using balance-sheet heuristics. Upload v2 template with liquidity sheets "
+                "for HSBC-style disclosure-driven calculation."
+            )
+        st.dataframe(liquidity.summary, use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.markdown("<p class='section-label'>Liquidity Coverage Ratio (LCR)</p>",
+                    unsafe_allow_html=True)
+        st.caption(
+            "LCR = HQLA Stock / Net Cash Outflows (30-day stress) ??? 100%. "
+            "Inflows capped at 75% of outflows."
+        )
+
+        lcr_color = GREEN if lcr_result.lcr_pass else RED
+        lcr_status = "PASS ???" if lcr_result.lcr_pass else "FAIL ???"
+        st.markdown(
+            f"<h3 style='font-size:15px;color:{NAVY}'>"
+            f"LCR = {lcr_result.lcr_pct:.1f}% &nbsp;"
+            f"<span style='font-size:12px;color:{lcr_color};"
+            f"background:{lcr_color}18;padding:3px 10px;"
+            f"border-radius:3px;font-weight:600'>{lcr_status}</span></h3>",
+            unsafe_allow_html=True,
+        )
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("HQLA Stock", f"${lcr_result.hqla_stock:,.1f}M")
+        m2.metric("Gross Outflows", f"${lcr_result.total_outflows:,.1f}M")
+        m3.metric("Capped Inflows", f"${lcr_result.capped_inflows:,.1f}M")
+        m4.metric("Net Outflows", f"${lcr_result.net_cash_outflows:,.1f}M")
+        m5.metric("Level 1 HQLA", f"${lcr_result.hqla_level1:,.1f}M")
+
+        col_h, col_o = st.columns(2)
+        with col_h:
+            st.markdown("**HQLA breakdown**")
+            if not lcr_result.hqla_breakdown.empty:
+                st.dataframe(
+                    _with_total_row(lcr_result.hqla_breakdown),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.warning("No HQLA-eligible assets identified.")
+        with col_o:
+            st.markdown("**30-day cash outflows**")
+            if not lcr_result.outflow_breakdown.empty:
+                st.dataframe(
+                    _with_total_row(lcr_result.outflow_breakdown),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        if not lcr_result.inflow_breakdown.empty:
+            st.markdown("**30-day cash inflows (before 75% cap)**")
             st.dataframe(
-                _with_total_row(lcr_result.outflow_breakdown),
+                _with_total_row(lcr_result.inflow_breakdown),
                 use_container_width=True,
                 hide_index=True,
             )
 
-    if not lcr_result.inflow_breakdown.empty:
-        st.markdown("**30-day cash inflows (before 75% cap)**")
-        st.dataframe(
-            _with_total_row(lcr_result.inflow_breakdown),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    st.divider()
-    st.markdown("<p class='section-label'>Net Stable Funding Ratio (NSFR)</p>",
-                unsafe_allow_html=True)
-    st.caption(
-        "NSFR = ASF / **tailored RSF** ≥ minimum (workbook default 100%). "
-        "ASF from capital (100%), retail deposits (95%/90%), wholesale by tenor. "
-        "RSF line items are weighted first; Category IV banks then apply an "
-        "**RSF reduction** (default 30%) before the ratio — so the breakdown "
-        "Total is pre-adjustment, not the NSFR denominator."
-    )
-
-    nsfr_color = GREEN if nsfr_result.nsfr_pass else RED
-    nsfr_status = "PASS ✓" if nsfr_result.nsfr_pass else "FAIL ✗"
-    st.markdown(
-        f"<h3 style='font-size:15px;color:{NAVY}'>"
-        f"NSFR = {nsfr_result.nsfr_pct:.1f}% &nbsp;"
-        f"<span style='font-size:12px;color:{nsfr_color};"
-        f"background:{nsfr_color}18;padding:3px 10px;"
-        f"border-radius:3px;font-weight:600'>{nsfr_status}</span></h3>",
-        unsafe_allow_html=True,
-    )
-
-    _rsf_pre = 0.0
-    if (
-        nsfr_result.rsf_breakdown is not None
-        and not nsfr_result.rsf_breakdown.empty
-        and "RSF ($M)" in nsfr_result.rsf_breakdown.columns
-    ):
-        _rsf_pre = float(
-            pd.to_numeric(nsfr_result.rsf_breakdown["RSF ($M)"], errors="coerce")
-            .fillna(0)
-            .sum()
-        )
-    if _rsf_pre <= 0:
-        _rsf_pre = float(nsfr_result.rsf_total)
-    _rsf_tailor_pct = (
-        (1.0 - float(nsfr_result.rsf_total) / _rsf_pre) * 100.0
-        if _rsf_pre > 1e-9
-        else 0.0
-    )
-
-    n1, n2, n3, n4, n5 = st.columns(5)
-    n1.metric("ASF Total", f"${nsfr_result.asf_total:,.1f}M")
-    n2.metric("RSF (pre-adj)", f"${_rsf_pre:,.1f}M")
-    n3.metric(
-        "RSF (tailored)",
-        f"${nsfr_result.rsf_total:,.1f}M",
-        delta=f"−{_rsf_tailor_pct:.0f}% Category IV" if _rsf_tailor_pct > 0.5 else None,
-        delta_color="off",
-    )
-    n4.metric("ASF — Capital", f"${nsfr_result.asf_capital:,.1f}M")
-    n5.metric(
-        "Funding Gap",
-        f"${nsfr_result.asf_total - nsfr_result.rsf_total:+,.1f}M",
-        help="ASF − tailored RSF (the NSFR denominator).",
-    )
-
-    if nmd_result is not None:
-        st.info(
-            f"NMD refinement active — LCR outflows and NSFR ASF use behavioural splits "
-            f"({nmd_result.stable_pct * 100:.0f}% stable core, "
-            f"{nmd_result.non_core_pct * 100:.0f}% non-core)."
-        )
-
-    col_asf, col_rsf = st.columns(2)
-    with col_asf:
-        st.markdown("**ASF breakdown (funding sources)**")
-        st.dataframe(
-            _with_total_row(nsfr_result.asf_breakdown),
-            use_container_width=True,
-            hide_index=True,
-        )
-    with col_rsf:
-        st.markdown("**RSF breakdown (asset requirements)**")
+        st.divider()
+        st.markdown("<p class='section-label'>Net Stable Funding Ratio (NSFR)</p>",
+                    unsafe_allow_html=True)
         st.caption(
-            f"Table Total = **pre-adjustment** RSF (${_rsf_pre:,.1f}M). "
-            f"NSFR uses tailored RSF ${nsfr_result.rsf_total:,.1f}M "
-            f"after ~{_rsf_tailor_pct:.0f}% Category IV reduction."
-        )
-        st.dataframe(
-            _with_total_row(nsfr_result.rsf_breakdown),
-            use_container_width=True,
-            hide_index=True,
+            "NSFR = ASF / **tailored RSF** ??? minimum (workbook default 100%). "
+            "ASF from capital (100%), retail deposits (95%/90%), wholesale by tenor. "
+            "RSF line items are weighted first; Category IV banks then apply an "
+            "**RSF reduction** (default 30%) before the ratio ??? so the breakdown "
+            "Total is pre-adjustment, not the NSFR denominator."
         )
 
-    st.download_button(
-        "⬇ Download Liquidity Ratios CSV",
-        liquidity.summary.to_csv(index=False),
-        file_name="liquidity_ratios_summary.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
+        nsfr_color = GREEN if nsfr_result.nsfr_pass else RED
+        nsfr_status = "PASS ???" if nsfr_result.nsfr_pass else "FAIL ???"
+        st.markdown(
+            f"<h3 style='font-size:15px;color:{NAVY}'>"
+            f"NSFR = {nsfr_result.nsfr_pct:.1f}% &nbsp;"
+            f"<span style='font-size:12px;color:{nsfr_color};"
+            f"background:{nsfr_color}18;padding:3px 10px;"
+            f"border-radius:3px;font-weight:600'>{nsfr_status}</span></h3>",
+            unsafe_allow_html=True,
+        )
 
+        _rsf_pre = 0.0
+        if (
+            nsfr_result.rsf_breakdown is not None
+            and not nsfr_result.rsf_breakdown.empty
+            and "RSF ($M)" in nsfr_result.rsf_breakdown.columns
+        ):
+            _rsf_pre = float(
+                pd.to_numeric(nsfr_result.rsf_breakdown["RSF ($M)"], errors="coerce")
+                .fillna(0)
+                .sum()
+            )
+        if _rsf_pre <= 0:
+            _rsf_pre = float(nsfr_result.rsf_total)
+        _rsf_tailor_pct = (
+            (1.0 - float(nsfr_result.rsf_total) / _rsf_pre) * 100.0
+            if _rsf_pre > 1e-9
+            else 0.0
+        )
 
-# ── TAB 1: All scenarios ──────────────────────────────────────────────────────
-with tab1:
-    st.markdown("<p class='section-label'>BCBS 368 — Six Prescribed Scenarios</p>",
-                unsafe_allow_html=True)
-    st.caption(
-        f"Tier 1 = ${tier1:,.0f}M · Outlier ≥ 15% (${tier1 * 0.15:,.0f}M) · "
-        f"Watch ≥ 10% (${tier1 * 0.10:,.0f}M)"
-    )
+        n1, n2, n3, n4, n5 = st.columns(5)
+        n1.metric("ASF Total", f"${nsfr_result.asf_total:,.1f}M")
+        n2.metric("RSF (pre-adj)", f"${_rsf_pre:,.1f}M")
+        n3.metric(
+            "RSF (tailored)",
+            f"${nsfr_result.rsf_total:,.1f}M",
+            delta=f"???{_rsf_tailor_pct:.0f}% Category IV" if _rsf_tailor_pct > 0.5 else None,
+            delta_color="off",
+        )
+        n4.metric("ASF ??? Capital", f"${nsfr_result.asf_capital:,.1f}M")
+        n5.metric(
+            "Funding Gap",
+            f"${nsfr_result.asf_total - nsfr_result.rsf_total:+,.1f}M",
+            help="ASF ??? tailored RSF (the NSFR denominator).",
+        )
 
-    card_cols = st.columns(3)
-    for idx, r in enumerate(results):
-        col = card_cols[idx % 3]
-        sc_color = _scenario_status_color(r.status)
-        short = SCENARIO_SHORT.get(r.scenario.name, r.scenario.name)
-        with col:
-            st.markdown(
-                f"<div style='background:{BG2};border:1px solid {BORDER};"
-                f"border-left:4px solid {SCENARIO_COLORS[idx]};border-radius:6px;"
-                f"padding:12px 14px;margin-bottom:10px'>"
-                f"<div style='font-size:12px;font-weight:600;color:{NAVY}'>"
-                f"{short}</div>"
-                f"<div style='font-size:10px;color:{DIM};margin:4px 0 8px'>"
-                f"{r.scenario.description[:70]}{'…' if len(r.scenario.description) > 70 else ''}"
-                f"</div>"
-                f"<div style='display:flex;justify-content:space-between;"
-                f"font-size:11px;font-family:monospace'>"
-                f"<span style='color:{DIM}'>ΔNII</span>"
-                f"<span style='color:{GREEN if r.delta_nii >= 0 else RED}'>"
-                f"${r.delta_nii:+.1f}M</span></div>"
-                f"<div style='display:flex;justify-content:space-between;"
-                f"font-size:11px;font-family:monospace;margin-top:4px'>"
-                f"<span style='color:{DIM}'>ΔEVE</span>"
-                f"<span style='color:{GREEN if r.delta_eve >= 0 else RED}'>"
-                f"${r.delta_eve:+.1f}M</span></div>"
-                f"<div style='display:flex;justify-content:space-between;"
-                f"font-size:11px;font-family:monospace;margin-top:4px'>"
-                f"<span style='color:{DIM}'>|ΔEVE|/T1</span>"
-                f"<span style='color:{sc_color};font-weight:600'>"
-                f"{r.delta_eve_pct:.1f}%</span></div>"
-                f"<div style='margin-top:8px;font-size:10px;font-weight:600;"
-                f"color:{sc_color}'>{r.status}</div></div>",
-                unsafe_allow_html=True,
+        if nmd_result is not None:
+            st.info(
+                f"NMD refinement active ??? LCR outflows and NSFR ASF use behavioural splits "
+                f"({nmd_result.stable_pct * 100:.0f}% stable core, "
+                f"{nmd_result.non_core_pct * 100:.0f}% non-core)."
             )
 
-    st.divider()
-    col_tbl, col_chart = st.columns([1.1, 0.9])
+        col_asf, col_rsf = st.columns(2)
+        with col_asf:
+            st.markdown("**ASF breakdown (funding sources)**")
+            st.dataframe(
+                _with_total_row(nsfr_result.asf_breakdown),
+                use_container_width=True,
+                hide_index=True,
+            )
+        with col_rsf:
+            st.markdown("**RSF breakdown (asset requirements)**")
+            st.caption(
+                f"Table Total = **pre-adjustment** RSF (${_rsf_pre:,.1f}M). "
+                f"NSFR uses tailored RSF ${nsfr_result.rsf_total:,.1f}M "
+                f"after ~{_rsf_tailor_pct:.0f}% Category IV reduction."
+            )
+            st.dataframe(
+                _with_total_row(nsfr_result.rsf_breakdown),
+                use_container_width=True,
+                hide_index=True,
+            )
 
-    with col_tbl:
-        st.markdown("<p class='section-label'>Summary Table</p>", unsafe_allow_html=True)
-        df_summary = pd.DataFrame([{
-            "Scenario": SCENARIO_SHORT.get(r.scenario.name, r.scenario.name),
-            "ΔNII ($M)": r.delta_nii,
-            "ΔEVE ($M)": r.delta_eve,
-            "|ΔEVE|/T1 (%)": r.delta_eve_pct,
-            "Status": r.status,
-        } for r in results])
-
-        def _style_status(val):
-            if val == "OUTLIER":
-                return f"color:{RED};font-weight:bold"
-            if val == "WATCH":
-                return f"color:{AMBER};font-weight:500"
-            return f"color:{GREEN};font-weight:500"
-
-        st.dataframe(
-            df_summary.style.format({
-                "ΔNII ($M)": "{:+.2f}",
-                "ΔEVE ($M)": "{:+.2f}",
-                "|ΔEVE|/T1 (%)": "{:.1f}",
-            }).map(_style_status, subset=["Status"]),
-            use_container_width=True, hide_index=True, height=260,
-        )
         st.download_button(
-            "⬇ Download CSV", df_summary.to_csv(index=False),
-            file_name="irrbb_summary.csv", mime="text/csv",
+            "??? Download Liquidity Ratios CSV",
+            liquidity.summary.to_csv(index=False),
+            file_name="liquidity_ratios_summary.csv",
+            mime="text/csv",
             use_container_width=True,
         )
 
-    with col_chart:
-        st.markdown("<p class='section-label'>|ΔEVE| / Tier 1</p>", unsafe_allow_html=True)
-        names = [SCENARIO_SHORT.get(r.scenario.name, r.scenario.name) for r in results]
-        pcts = [r.delta_eve_pct for r in results]
-        bar_colors = [
-            RED if r.is_outlier else AMBER if r.is_watch else SCENARIO_COLORS[i]
-            for i, r in enumerate(results)
-        ]
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=names, y=pcts, marker_color=bar_colors,
-            marker_line_color=BORDER, marker_line_width=1,
-            text=[f"{v:.1f}%" for v in pcts], textposition="outside",
-            textfont=dict(size=10, color=TEXT),
-        ))
-        fig.add_hline(y=15, line_color=RED, line_dash="dash", line_width=1.5,
-                      annotation_text="15% outlier", annotation_font=dict(color=RED, size=9))
-        fig.add_hline(y=10, line_color=AMBER, line_dash="dot", line_width=1,
-                      annotation_text="10% watch", annotation_font=dict(color=AMBER, size=9))
-        fig.update_layout(
-            **PLOTLY_BASE, height=300, showlegend=False,
-            yaxis=dict(**AXIS_STYLE, ticksuffix="%", title="|ΔEVE| / T1 (%)"),
-            xaxis=dict(**AXIS_STYLE),
-        )
-        st.plotly_chart(fig, use_container_width=True)
 
+    # ?????? TAB 1: All scenarios ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+with tab1:
+    if not _run_ok:
+        st.info("Fix balance-sheet errors on **Inputs**, then Apply & Run.")
+    else:
+        st.markdown("<p class='section-label'>Dashboard — EVE / NII heatmap & exceptions</p>",
+                    unsafe_allow_html=True)
+        st.caption(
+            f"Tier 1 = ${tier1:,.0f}M · Outlier ≥ {outlier_pct}% · Watch ≥ {watch_pct}%"
+        )
+
+        heat = scenario_heatmap_frame(results)
+        # Heatmap via plotly
+        z = np.array([
+            heat["ΔNII ($M)"].tolist(),
+            heat["ΔEVE ($M)"].tolist(),
+            heat["|ΔEVE|/T1 %"].tolist(),
+        ], dtype=float)
+        fig_h = go.Figure(data=go.Heatmap(
+            z=z,
+            x=[SCENARIO_SHORT.get(s, s) for s in heat["Scenario"]],
+            y=["ΔNII ($M)", "ΔEVE ($M)", "|ΔEVE|/T1 %"],
+            colorscale="RdYlGn",
+            zmid=0,
+            text=np.round(z, 1),
+            texttemplate="%{text}",
+            hoverongaps=False,
+        ))
+        fig_h.update_layout(**PLOTLY_BASE, height=220, margin=dict(l=80, r=20, t=20, b=40))
+        st.plotly_chart(fig_h, use_container_width=True)
+
+        st.markdown("<p class='section-label'>Exception view</p>", unsafe_allow_html=True)
+        exc = exception_rows(results)
+        st.dataframe(
+            style_delta_columns(exc, ["ΔEVE ($M)", "ΔNII ($M)"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if expert_mode:
+            st.markdown("<p class='section-label'>BCBS 368 — Six Prescribed Scenarios</p>",
+                        unsafe_allow_html=True)
+
+            card_cols = st.columns(3)
+            for idx, r in enumerate(results):
+                col = card_cols[idx % 3]
+                sc_color = _scenario_status_color(r.status)
+                short = SCENARIO_SHORT.get(r.scenario.name, r.scenario.name)
+                with col:
+                    st.markdown(
+                        f"<div style='background:{BG2};border:1px solid {BORDER};"
+                        f"border-left:4px solid {SCENARIO_COLORS[idx]};border-radius:6px;"
+                        f"padding:12px 14px;margin-bottom:10px'>"
+                        f"<div style='font-size:12px;font-weight:600;color:{NAVY}'>"
+                        f"{short}</div>"
+                        f"<div style='font-size:10px;color:{DIM};margin:4px 0 8px'>"
+                        f"{r.scenario.description[:70]}{'…' if len(r.scenario.description) > 70 else ''}"
+                        f"</div>"
+                        f"<div style='display:flex;justify-content:space-between;"
+                        f"font-size:11px;font-family:monospace'>"
+                        f"<span style='color:{DIM}'>ΔNII</span>"
+                        f"<span style='color:{GREEN if r.delta_nii >= 0 else RED}'>"
+                        f"${r.delta_nii:+.1f}M</span></div>"
+                        f"<div style='display:flex;justify-content:space-between;"
+                        f"font-size:11px;font-family:monospace;margin-top:4px'>"
+                        f"<span style='color:{DIM}'>ΔEVE</span>"
+                        f"<span style='color:{GREEN if r.delta_eve >= 0 else RED}'>"
+                        f"${r.delta_eve:+.1f}M</span></div>"
+                        f"<div style='display:flex;justify-content:space-between;"
+                        f"font-size:11px;font-family:monospace;margin-top:4px'>"
+                        f"<span style='color:{DIM}'>|ΔEVE|/T1</span>"
+                        f"<span style='color:{sc_color};font-weight:600'>"
+                        f"{r.delta_eve_pct:.1f}%</span></div>"
+                        f"<div style='margin-top:8px;font-size:10px;font-weight:600;"
+                        f"color:{sc_color}'>{r.status}</div></div>",
+                        unsafe_allow_html=True,
+                    )
+
+            st.divider()
+            col_tbl, col_chart = st.columns([1.1, 0.9])
+
+            with col_tbl:
+                st.markdown("<p class='section-label'>Summary Table</p>", unsafe_allow_html=True)
+                df_summary = pd.DataFrame([{
+                    "Scenario": SCENARIO_SHORT.get(r.scenario.name, r.scenario.name),
+                    "ΔNII ($M)": r.delta_nii,
+                    "ΔEVE ($M)": r.delta_eve,
+                    "|ΔEVE|/T1 (%)": r.delta_eve_pct,
+                    "Status": r.status,
+                } for r in results])
+
+                def _style_status(val):
+                    if val == "OUTLIER":
+                        return f"color:{RED};font-weight:bold"
+                    if val == "WATCH":
+                        return f"color:{AMBER};font-weight:500"
+                    return f"color:{GREEN};font-weight:500"
+
+                st.dataframe(
+                    df_summary.style.format({
+                        "ΔNII ($M)": "{:+.2f}",
+                        "ΔEVE ($M)": "{:+.2f}",
+                        "|ΔEVE|/T1 (%)": "{:.1f}",
+                    }).map(_style_status, subset=["Status"]),
+                    use_container_width=True, hide_index=True, height=260,
+                )
+                st.download_button(
+                    "⬇ Download CSV", df_summary.to_csv(index=False),
+                    file_name="irrbb_summary.csv", mime="text/csv",
+                    use_container_width=True,
+                    key="dl_dash_summary",
+                )
+        else:
+            st.caption("Enable **Expert mode** in the sidebar for scenario cards and full summary chart.")
 
 # ── TAB 2: Scenario detail ────────────────────────────────────────────────────
 with tab2:
-    r = active
-    status_color = RED if r.is_outlier else AMBER if r.is_watch else GREEN
-    sc_color_idx = next(i for i, s in enumerate(SCENARIOS) if s.id == r.scenario.id)
-    sc_color = SCENARIO_COLORS[sc_color_idx]
-
-    st.markdown(
-        f"<h3 style='font-size:15px;color:{NAVY}'>"
-        f"{SCENARIO_SHORT.get(r.scenario.name, r.scenario.name)} — {r.scenario.name} &nbsp;"
-        f"<span style='font-size:12px;color:{status_color};"
-        f"background:{status_color}18;padding:3px 10px;"
-        f"border-radius:3px;font-weight:600'>{r.status}</span></h3>"
-        f"<p style='color:{DIM};font-size:11px'>{r.scenario.description}</p>",
-        unsafe_allow_html=True,
-    )
-
-    if r.is_outlier:
-        st.error(
-            f"⚠ SUPERVISORY OUTLIER — |ΔEVE| = ${abs(r.delta_eve):.1f}M "
-            f"exceeds 15% of Tier 1 (${tier1 * 0.15:.0f}M). "
-            f"BCBS 368 §99: supervisor notification required."
-        )
-    elif r.is_watch:
-        st.warning(
-            f"|ΔEVE| = {r.delta_eve_pct:.1f}% — approaching the 15% outlier threshold."
-        )
+    if not _run_ok or active is None:
+        st.info("Run the model from **Inputs** first.")
     else:
-        st.success(
-            f"✓ PASS — |ΔEVE| = {r.delta_eve_pct:.1f}% within the 15% threshold."
+        r = active
+        status_color = RED if r.is_outlier else AMBER if r.is_watch else GREEN
+        try:
+            sc_color_idx = next(i for i, s in enumerate(SCENARIOS) if s.id == r.scenario.id)
+        except StopIteration:
+            sc_color_idx = 0
+        sc_color = SCENARIO_COLORS[sc_color_idx]
+
+        st.markdown(
+            f"<h3 style='font-size:15px;color:{NAVY}'>"
+            f"{SCENARIO_SHORT.get(r.scenario.name, r.scenario.name)} — {r.scenario.name} &nbsp;"
+            f"<span style='font-size:12px;color:{status_color};"
+            f"background:{status_color}18;padding:3px 10px;"
+            f"border-radius:3px;font-weight:600'>{r.status}</span></h3>"
+            f"<p style='color:{DIM};font-size:11px'>{r.scenario.description}</p>",
+            unsafe_allow_html=True,
         )
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Δ NII (1Y)",  f"${r.delta_nii:+.2f}M")
-    m2.metric("Δ EVE",       f"${r.delta_eve:+.2f}M")
-    m3.metric("|ΔEVE| / T1", f"{r.delta_eve_pct:.1f}%")
-    m4.metric("Asset EVE Δ", f"${r.eve_asset:+.2f}M")
+        if r.is_outlier:
+            st.error(
+                f"⚠ SUPERVISORY OUTLIER — |ΔEVE| = ${abs(r.delta_eve):.1f}M "
+                f"exceeds 15% of Tier 1 (${tier1 * 0.15:.0f}M). "
+                f"BCBS 368 §99: supervisor notification required."
+            )
+        elif r.is_watch:
+            st.warning(
+                f"|ΔEVE| = {r.delta_eve_pct:.1f}% — approaching the 15% outlier threshold."
+            )
+        else:
+            st.success(
+                f"✓ PASS — |ΔEVE| = {r.delta_eve_pct:.1f}% within the 15% threshold."
+            )
 
-    st.divider()
-    col_l, col_r = st.columns(2)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Δ NII (1Y)",  f"${r.delta_nii:+.2f}M")
+        m2.metric("Δ EVE",       f"${r.delta_eve:+.2f}M")
+        m3.metric("|ΔEVE| / T1", f"{r.delta_eve_pct:.1f}%")
+        m4.metric("Asset EVE Δ", f"${r.eve_asset:+.2f}M")
 
-    with col_l:
-        st.markdown("<p class='section-label'>Rate Shock Profile</p>",
+        st.divider()
+        col_l, col_r = st.columns(2)
+
+        with col_l:
+            st.markdown("<p class='section-label'>Rate Shock Profile</p>",
+                        unsafe_allow_html=True)
+            hex_c = sc_color.lstrip("#")
+            r_int, g_int, b_int = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(
+                x=list(range(N_BUCKETS)), y=selected_scenario.shocks_bp,
+                mode="lines+markers",
+                line=dict(color=sc_color, width=2.5),
+                marker=dict(size=5, color=sc_color),
+                fill="tozeroy",
+                fillcolor=f"rgba({r_int},{g_int},{b_int},0.08)",
+            ))
+            fig2.add_hline(y=0, line_color=BORDER, line_width=1)
+            fig2.update_layout(
+                **PLOTLY_BASE, height=270, showlegend=False,
+                xaxis=dict(
+                    **AXIS_STYLE,
+                    tickvals=list(range(0, N_BUCKETS, 2)),
+                    ticktext=[BUCKET_LABELS[i] for i in range(0, N_BUCKETS, 2)],
+                    tickangle=-35,
+                ),
+                yaxis=dict(**AXIS_STYLE, title="Shock (bp)"),
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+
+        with col_r:
+            st.markdown("<p class='section-label'>NII Decomposition</p>",
+                        unsafe_allow_html=True)
+            fig3 = go.Figure(data=[
+                go.Bar(
+                    name="Asset repricing",
+                    x=["Assets"], y=[r.nii_asset],
+                    marker_color=BLUE, marker_line_color=BORDER, marker_line_width=1,
+                    text=f"${r.nii_asset:+.1f}M", textposition="outside",
+                ),
+                go.Bar(
+                    name="Liability repricing",
+                    x=["Liabilities"], y=[r.nii_liability],
+                    marker_color=ORANGE, marker_line_color=BORDER, marker_line_width=1,
+                    text=f"${r.nii_liability:+.1f}M", textposition="outside",
+                ),
+                go.Bar(
+                    name="Net ΔNII",
+                    x=["Net"], y=[r.delta_nii],
+                    marker_color=GREEN if r.delta_nii >= 0 else RED,
+                    marker_line_color=BORDER, marker_line_width=1,
+                    text=f"${r.delta_nii:+.1f}M", textposition="outside",
+                ),
+            ])
+            fig3.add_hline(y=0, line_color=BORDER, line_width=1)
+            fig3.update_layout(
+                **PLOTLY_BASE, height=270, barmode="group",
+                yaxis=dict(**AXIS_STYLE, title="Δ NII (USD M)"),
+                xaxis=dict(**AXIS_STYLE),
+                legend=dict(font=dict(size=10), bgcolor=BG2,
+                            bordercolor=BORDER, borderwidth=1),
+            )
+            st.plotly_chart(fig3, use_container_width=True)
+
+        st.markdown("<p class='section-label'>NII Sensitivity Grid (accrual engine)</p>",
                     unsafe_allow_html=True)
-        hex_c = sc_color.lstrip("#")
-        r_int, g_int, b_int = int(hex_c[0:2], 16), int(hex_c[2:4], 16), int(hex_c[4:6], 16)
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(
-            x=list(range(N_BUCKETS)), y=selected_scenario.shocks_bp,
-            mode="lines+markers",
-            line=dict(color=sc_color, width=2.5),
-            marker=dict(size=5, color=sc_color),
-            fill="tozeroy",
-            fillcolor=f"rgba({r_int},{g_int},{b_int},0.08)",
-        ))
-        fig2.add_hline(y=0, line_color=BORDER, line_width=1)
-        fig2.update_layout(
-            **PLOTLY_BASE, height=270, showlegend=False,
-            xaxis=dict(
-                **AXIS_STYLE,
-                tickvals=list(range(0, N_BUCKETS, 2)),
-                ticktext=[BUCKET_LABELS[i] for i in range(0, N_BUCKETS, 2)],
-                tickangle=-35,
-            ),
-            yaxis=dict(**AXIS_STYLE, title="Shock (bp)"),
-        )
-        st.plotly_chart(fig2, use_container_width=True)
-
-    with col_r:
-        st.markdown("<p class='section-label'>NII Decomposition</p>",
-                    unsafe_allow_html=True)
-        fig3 = go.Figure(data=[
-            go.Bar(
-                name="Asset repricing",
-                x=["Assets"], y=[r.nii_asset],
-                marker_color=BLUE, marker_line_color=BORDER, marker_line_width=1,
-                text=f"${r.nii_asset:+.1f}M", textposition="outside",
-            ),
-            go.Bar(
-                name="Liability repricing",
-                x=["Liabilities"], y=[r.nii_liability],
-                marker_color=ORANGE, marker_line_color=BORDER, marker_line_width=1,
-                text=f"${r.nii_liability:+.1f}M", textposition="outside",
-            ),
-            go.Bar(
-                name="Net ΔNII",
-                x=["Net"], y=[r.delta_nii],
-                marker_color=GREEN if r.delta_nii >= 0 else RED,
-                marker_line_color=BORDER, marker_line_width=1,
-                text=f"${r.delta_nii:+.1f}M", textposition="outside",
-            ),
-        ])
-        fig3.add_hline(y=0, line_color=BORDER, line_width=1)
-        fig3.update_layout(
-            **PLOTLY_BASE, height=270, barmode="group",
-            yaxis=dict(**AXIS_STYLE, title="Δ NII (USD M)"),
-            xaxis=dict(**AXIS_STYLE),
-            legend=dict(font=dict(size=10), bgcolor=BG2,
-                        bordercolor=BORDER, borderwidth=1),
-        )
-        st.plotly_chart(fig3, use_container_width=True)
-
-    st.markdown("<p class='section-label'>NII Sensitivity Grid (accrual engine)</p>",
-                unsafe_allow_html=True)
-    st.caption(
-        "Month-by-month NII over a 12-month horizon under a **constant balance sheet** "
-        "(runoff reinvested). No discounting — distinct from EVE. "
-        "BCBS uses ±200 bp; US practice adds ±100/300/400 and 12m ramps. "
-        "Basel sets no NII threshold; 5% of Tier 1 is an EU/EBA reference only."
-    )
-    nii_mode = st.radio(
-        "NII scenario set",
-        ["BCBS (±200 bp)", "US practice (±100…400 + ramps)"],
-        horizontal=True,
-        key="nii_grid_mode",
-    )
-    nii_rows = calc.nii_sensitivity_grid(
-        us_mode=("US" in nii_mode),
-        horizon_months=12,
-        constant_balance_sheet=True,
-    )
-    nii_df = pd.DataFrame(nii_rows)
-    if not nii_df.empty:
-        show = nii_df.rename(columns={
-            "scenario": "Scenario",
-            "shock_bp": "Shock (bp)",
-            "ramp": "Ramp",
-            "nii": "NII ($M)",
-            "d_nii": "ΔNII ($M)",
-            "pct_tier1": "% Tier 1",
-            "pct_base_nii": "% Base NII",
-        })
-        st.dataframe(
-            show.style.format({
-                "NII ($M)": "{:.2f}",
-                "ΔNII ($M)": "{:+.2f}",
-                "% Tier 1": "{:+.2f}",
-                "% Base NII": "{:+.2f}",
-            }),
-            use_container_width=True,
-            hide_index=True,
-        )
         st.caption(
-            f"Base 12m NII ≈ ${float(nii_df['nii'].iloc[0] - nii_df['d_nii'].iloc[0]):.2f}M · "
-            "Deposits reprice 1:1 with the shock (floored at 0); floaters after next reset; "
-            "MBS CPR is live under the shock."
+            f"Sidebar NII settings: {int(nii_horizon)}m horizon · "
+            f"{'US shock set' if nii_us_mode else 'BCBS ±200'} · "
+            f"{'constant BS' if nii_constant_bs else 'static BS'}. "
+            "No discounting — distinct from EVE."
         )
+        nii_rows = calc.nii_sensitivity_grid(
+            us_mode=bool(nii_us_mode),
+            horizon_months=int(nii_horizon),
+            constant_balance_sheet=bool(nii_constant_bs),
+        )
+        nii_df = pd.DataFrame(nii_rows)
+        if not nii_df.empty:
+            show = nii_df.rename(columns={
+                "scenario": "Scenario",
+                "shock_bp": "Shock (bp)",
+                "ramp": "Ramp",
+                "nii": "NII ($M)",
+                "d_nii": "ΔNII ($M)",
+                "pct_tier1": "% Tier 1",
+                "pct_base_nii": "% Base NII",
+            })
+            st.dataframe(
+                show.style.format({
+                    "NII ($M)": "{:.2f}",
+                    "ΔNII ($M)": "{:+.2f}",
+                    "% Tier 1": "{:+.2f}",
+                    "% Base NII": "{:+.2f}",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(
+                f"Base 12m NII ≈ ${float(nii_df['nii'].iloc[0] - nii_df['d_nii'].iloc[0]):.2f}M · "
+                "Deposits reprice 1:1 with the shock (floored at 0); floaters after next reset; "
+                "MBS CPR is live under the shock."
+            )
 
 
-# ── TAB 3: EVE Waterfall ──────────────────────────────────────────────────────
+    # ── TAB 3: EVE Waterfall ──────────────────────────────────────────────────────
 with tab3:
     st.markdown(
         f"<p class='section-label'>"
@@ -2102,6 +2392,14 @@ with tab6:
             "**Use live SOFR + USD IRS mid curve** in the sidebar for market rates."
         )
 
+
+
+# ── TAB: Docs ─────────────────────────────────────────────────────────────────
+with tab_docs:
+    st.markdown(DOCS_MARKDOWN)
+    st.markdown("<p class='section-label'>Required CSV columns</p>", unsafe_allow_html=True)
+    st.code("name, side, notional, coupon_pct, instrument_type, maturity_years", language=None)
+    st.caption("Optional: payment_freq, repricing_years, wac, wam_months, oas, anchor_tenor, mbs_level, current_rate, book, currency")
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
