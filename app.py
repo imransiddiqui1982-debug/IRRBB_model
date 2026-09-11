@@ -38,7 +38,6 @@ from src.time_buckets import BUCKET_LABELS, N_BUCKETS  # noqa: E402
 from src.yield_curve import YieldCurve  # noqa: E402
 from src.ui_helpers import (  # noqa: E402
     DOCS_MARKDOWN,
-    apply_whatif_wac,
     available_packs,
     build_export_zip,
     custom_scenario,
@@ -425,11 +424,6 @@ with st.sidebar:
         help="0–12M SOFR; 1Y–10Y USD SOFR IRS mids.",
     )
     refresh_curve = st.button("Refresh live curve", use_container_width=True)
-    lock_pmms = st.checkbox("Override PMMS % (manual)", value=False)
-    pmms_override_pct = st.number_input(
-        "PMMS %", value=6.71, min_value=0.0, max_value=20.0, step=0.01,
-        disabled=not lock_pmms,
-    )
     curve_paste = st.text_area(
         "Optional curve override (tenor_years,rate_pct per line)",
         value="",
@@ -648,7 +642,7 @@ if csv_payload:
     _bs_df_preview, _bs_issues = validate_balance_sheet_bytes(csv_payload)
 _hard_errors = [i for i in _bs_issues if i["severity"] == "error"]
 
-pmms_override = (pmms_override_pct / 100.0) if lock_pmms else None
+pmms_override = None
 
 pmms_meta: dict = {}
 _run_ok = False
@@ -936,41 +930,6 @@ with tab_in:
                 st.session_state.pack_key_loaded = None
                 st.session_state.bs_editor_rev += 1
                 st.rerun()
-
-        st.markdown("<p class='section-label'>What-if · WAC shock</p>",
-                    unsafe_allow_html=True)
-        _names = list(_edit_df["name"].astype(str))
-        wi1, wi2, wi3 = st.columns([2, 1, 1])
-        with wi1:
-            wi_name = st.selectbox("Instrument", _names, key="whatif_name")
-        with wi2:
-            wi_bp = st.number_input("WAC Δ (bp)", value=50, step=25, key="whatif_bp")
-        with wi3:
-            run_wi = st.button("Compare ΔEVE", use_container_width=True)
-        if run_wi and _run_ok:
-            try:
-                alt_bytes = apply_whatif_wac(csv_payload, wi_name, float(wi_bp))
-                alt = run_model(
-                    float(tier1), alt_bytes, nmd_payload, deposit_name, use_nmd,
-                    curve_tenors_t, curve_rates_t, pmms_override,
-                    outlier_pct / 100.0, watch_pct / 100.0, 16,
-                )
-                base_eve = {r.scenario.id: r.delta_eve for r in results}
-                alt_res = alt[1]
-                rows = []
-                for r in alt_res:
-                    rows.append({
-                        "Scenario": r.scenario.name,
-                        "Base ΔEVE": round(base_eve.get(r.scenario.id, 0.0), 2),
-                        "What-if ΔEVE": round(r.delta_eve, 2),
-                        "Diff": round(r.delta_eve - base_eve.get(r.scenario.id, 0.0), 2),
-                    })
-                st.dataframe(
-                    style_delta_columns(pd.DataFrame(rows), ["Diff"]),
-                    use_container_width=True,
-                )
-            except Exception as exc:
-                st.warning(f"What-if failed: {exc}")
     else:
         st.info("No balance sheet loaded.")
 
@@ -1213,16 +1172,15 @@ with tab1:
         )
 
         heat = scenario_heatmap_frame(results)
-        # Heatmap via plotly
+        # Heatmap via plotly (ΔNII / ΔEVE only — no T1 % row)
         z = np.array([
             heat["ΔNII ($M)"].tolist(),
             heat["ΔEVE ($M)"].tolist(),
-            heat["|ΔEVE|/T1 %"].tolist(),
         ], dtype=float)
         fig_h = go.Figure(data=go.Heatmap(
             z=z,
             x=[SCENARIO_SHORT.get(s, s) for s in heat["Scenario"]],
-            y=["ΔNII ($M)", "ΔEVE ($M)", "|ΔEVE|/T1 %"],
+            y=["ΔNII ($M)", "ΔEVE ($M)"],
             colorscale="RdYlGn",
             zmid=0,
             text=np.round(z, 1),
@@ -1230,7 +1188,7 @@ with tab1:
             hoverongaps=False,
         ))
         fig_h.update_layout(
-            **{**PLOTLY_BASE, "height": 220, "margin": dict(l=80, r=20, t=20, b=40)},
+            **{**PLOTLY_BASE, "height": 180, "margin": dict(l=80, r=20, t=20, b=40)},
         )
         st.plotly_chart(fig_h, use_container_width=True)
 
@@ -1820,27 +1778,6 @@ with tab_kr:
             "B ladders all keys. C is a partial A. Hedged rows ≈ predicted+convexity."
         )
 
-        fig_lim = go.Figure()
-        colors_l = [
-            RED if s == "BREACH" else AMBER if s == "AMBER" else GREEN
-            for s in lim["Status"]
-        ]
-        fig_lim.add_trace(go.Bar(
-            x=lim["Scenario"], y=lim["% Tier 1"],
-            marker_color=colors_l, name="% Tier 1",
-            hovertemplate="%{x}<br>%{y:+.1f}% Tier 1<extra></extra>",
-        ))
-        fig_lim.add_hline(y=-15, line_dash="dash", line_color=RED,
-                          annotation_text="15% breach", annotation_font=dict(color=RED, size=9))
-        fig_lim.add_hline(y=-10, line_dash="dot", line_color=AMBER,
-                          annotation_text="10% amber", annotation_font=dict(color=AMBER, size=9))
-        fig_lim.update_layout(
-            **PLOTLY_BASE, height=360, showlegend=False,
-            yaxis=dict(**AXIS_STYLE, title="ΔEVE / Tier 1 (%)"),
-            xaxis=dict(**AXIS_STYLE, tickangle=-25),
-        )
-        st.plotly_chart(fig_lim, use_container_width=True)
-
     # ── Treasury KR01 ─────────────────────────────────────────────────────────
     elif layer == "Treasury KR01 & attribution":
         st.markdown(
@@ -2241,33 +2178,6 @@ Steps A–C pricing. Live logistic parameters come from loan-level calibration w
             use_container_width=True,
             hide_index=True,
         )
-
-        fig_t1 = go.Figure()
-        fig_t1.add_trace(go.Bar(
-            name="% Tier 1 before",
-            x=summ["Scenario"], y=summ["% Tier 1 before"],
-            marker_color=ORANGE, opacity=0.85,
-        ))
-        fig_t1.add_trace(go.Bar(
-            name="% Tier 1 after",
-            x=summ["Scenario"], y=summ["% Tier 1 after"],
-            marker_color=BLUE, opacity=0.85,
-        ))
-        fig_t1.add_hline(
-            y=-15, line_dash="dash", line_color=RED,
-            annotation_text="15% breach", annotation_font=dict(color=RED, size=9),
-        )
-        fig_t1.add_hline(
-            y=-10, line_dash="dot", line_color=AMBER,
-            annotation_text="10% amber", annotation_font=dict(color=AMBER, size=9),
-        )
-        fig_t1.update_layout(
-            **PLOTLY_BASE, height=380, barmode="group",
-            yaxis=dict(**AXIS_STYLE, title="ΔEVE / Tier 1 (%)"),
-            xaxis=dict(**AXIS_STYLE, tickangle=-25),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, bgcolor=BG2),
-        )
-        st.plotly_chart(fig_t1, use_container_width=True)
 
         # Sanity: ladder-total Parallel-Up relief ≈ −ΔEVE change on Parallel Up (predicted)
         _par = next((s.name for s in SCENARIOS if s.id == "PS_UP"), None)
