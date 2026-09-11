@@ -138,6 +138,8 @@ class Instrument:
     hqla_level:       str = ""   # level_1 | level_2a | not_eligible
     nsfr_rsf_factor:   float | None = None
     credit_spread:    float = 0.0  # whole-loan placeholder only
+    # NII accrual: optional explicit rate (decimal); else coupon_pct/100
+    current_rate:     float | None = None
     cashflows:        list[CashFlow] = field(default_factory=list, repr=False)
 
     def __post_init__(self):

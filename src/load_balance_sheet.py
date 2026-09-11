@@ -64,6 +64,7 @@ OPTIONAL_COLUMNS = [
     "nsfr_rsf_factor",
     "credit_spread",
     "use_option_adjusted",
+    "current_rate",
 ]
 VALID_TYPES = {
     "bullet_fixed", "bullet_floating", "amortising",
@@ -218,6 +219,11 @@ def _row_to_instrument(row: pd.Series) -> Instrument:
         hqla_level=hqla_level,
         nsfr_rsf_factor=_opt_float(row, "nsfr_rsf_factor"),
         credit_spread=_opt_float(row, "credit_spread", 0.0) or 0.0,
+        current_rate=(
+            (lambda v: (v / 100.0 if v is not None and v > 1.0 else v))(
+                _opt_float(row, "current_rate")
+            )
+        ),
     )
 
 

@@ -20,16 +20,13 @@ This correctly accounts for:
   - Different shock magnitudes per bucket (non-parallel scenarios)
   - Discount rate flooring at 0% (no negative rates)
 
-NII methodology (BCBS 368 §109–112)
---------------------------------------
-NII is computed over a 1-year horizon. Floating-rate / NMD notionals that
-reprice within the horizon contribute:
-
-    ΔNII(i) = repricing_notional(i) × shock(bucket_i) / 10_000
-
-Mortgage CPR: prepaid principal returned within 1Y is assumed to reinvest
-at the shocked short rate (O/N bucket), so higher CPR under rate-down
-scenarios reduces asset NII (lost coupon on prepaid balances).
+NII methodology (BCBS 368 §109–112 + accrual engine)
+----------------------------------------------------
+NII uses ``src.nii_engine``: month-by-month interest accrual over a 12-month
+horizon under a constant balance sheet (runoff reinvested at the scenario
+rate). No discounting. Each EVE scenario maps to a parallel NII shock via
+the 1Y pillar. Floater reset timing, NMD beta, and live MBS CPR all affect
+accrual / reinvestment within the horizon.
 
 Mortgage prepayment (CPR)
 -------------------------
@@ -210,56 +207,45 @@ class IRRBBCalculator:
 
     # ── NII ───────────────────────────────────────────────────────────────────
 
-    def _nii_side(
-        self,
-        instruments: list[Instrument],
-        scenario:    Scenario,
-        sign:        int,
-    ) -> float:
-        total = 0.0
-        short_shock = scenario.shock_at_bucket(0) / 10_000
-        for inst in instruments:
-            if inst.instrument_type in ("bullet_floating", "demand_deposit"):
-                bucket = inst.cashflows[0].bucket   # single repricing CF
-                shock_dec = scenario.shock_at_bucket(bucket) / 10_000
-                total += sign * inst.notional * shock_dec
-            elif inst.is_prepayable and inst.side == "asset":
-                # Lost coupon on balances prepaid within 1Y under the shock,
-                # partially offset by reinvestment at the shocked short rate.
-                cpr_base = self._cpr_override_for("BASE")
-                cpr_shock = self._cpr_override_for(scenario.id)
-                mkt_base = scenario_market_mortgage_rate(
-                    self.curve.base_rates, None, inst.maturity_years,
-                )
-                mkt_shock = scenario_market_mortgage_rate(
-                    self.curve.base_rates, scenario.shocks_bp, inst.maturity_years,
-                )
-                base_cfs = inst.cashflows_under_market_rate(
-                    mkt_base, cpr_override=cpr_base,
-                )
-                shock_cfs = inst.cashflows_under_market_rate(
-                    mkt_shock, cpr_override=cpr_shock,
-                )
-
-                def _prep_1y(cfs):
-                    return sum(
-                        cf.amount for cf in cfs
-                        if cf.cf_type == "prepayment" and cf.time_years <= 1.0 + 1e-9
-                    )
-
-                prep_base = _prep_1y(base_cfs)
-                prep_shock = _prep_1y(shock_cfs)
-                extra_prep = prep_shock - prep_base
-                coupon_dec = inst.coupon_pct / 100.0
-                reinvest = float(self.curve.base_rates[0]) + short_shock
-                total += sign * extra_prep * (reinvest - coupon_dec) * 0.5
-        return total
-
     def calc_nii(self, scenario: Scenario) -> tuple[float, float, float]:
-        nii_a = self._nii_side(self.assets,      scenario, +1)
-        nii_l = self._nii_side(self.liabilities, scenario, -1)
-        return nii_a + nii_l, nii_a, nii_l
+        """
+        ΔNII vs base (12m constant BS accrual). Returns (total, assets, liabilities).
+        """
+        from .nii_engine import portfolio_nii_delta
 
+        return portfolio_nii_delta(
+            self.assets,
+            self.liabilities,
+            self.curve,
+            scenario,
+            horizon_months=12,
+            constant_balance_sheet=True,
+            tier1=self.tier1,
+        )
+
+    def nii_sensitivity_grid(
+        self,
+        *,
+        us_mode: bool = False,
+        horizon_months: int = 12,
+        constant_balance_sheet: bool = True,
+    ):
+        """BCBS (±200) or US (±100..400 + ramps) NII delta table."""
+        from .nii_engine import (
+            BCBS_NII_SCENARIOS,
+            US_NII_SCENARIOS,
+            NIIPortfolio,
+        )
+
+        port = NIIPortfolio(
+            positions=list(self.assets) + list(self.liabilities),
+            base_curve=self.curve,
+            horizon_months=horizon_months,
+            constant_balance_sheet=constant_balance_sheet,
+            tier1=self.tier1,
+        )
+        scenarios = US_NII_SCENARIOS if us_mode else BCBS_NII_SCENARIOS
+        return port.delta_grid(scenarios)
     # ── Full scenario ─────────────────────────────────────────────────────────
 
     def run_scenario(self, scenario: Scenario) -> ScenarioResult:

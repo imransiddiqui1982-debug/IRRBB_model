@@ -554,6 +554,7 @@ def _make_instruments(
             payment_freq=12,
             repricing_years=wal_years,
             side="liability",
+            current_rate=float(deposit_rate_pct) / 100.0,
         ))
     if rate_sensitive_mb > 0.01:
         instruments.append(Instrument(
@@ -565,6 +566,7 @@ def _make_instruments(
             payment_freq=12,
             repricing_years=DEFAULT_RATE_SENSITIVE_REPRICING_YEARS,
             side="liability",
+            current_rate=float(deposit_rate_pct) / 100.0,
         ))
     if non_core_mb > 0.01:
         op_tag = " Wholesale Operational" if operational_pct >= 0.5 else ""

@@ -1128,6 +1128,52 @@ with tab2:
         )
         st.plotly_chart(fig3, use_container_width=True)
 
+    st.markdown("<p class='section-label'>NII Sensitivity Grid (accrual engine)</p>",
+                unsafe_allow_html=True)
+    st.caption(
+        "Month-by-month NII over a 12-month horizon under a **constant balance sheet** "
+        "(runoff reinvested). No discounting — distinct from EVE. "
+        "BCBS uses ±200 bp; US practice adds ±100/300/400 and 12m ramps. "
+        "Basel sets no NII threshold; 5% of Tier 1 is an EU/EBA reference only."
+    )
+    nii_mode = st.radio(
+        "NII scenario set",
+        ["BCBS (±200 bp)", "US practice (±100…400 + ramps)"],
+        horizontal=True,
+        key="nii_grid_mode",
+    )
+    nii_rows = calc.nii_sensitivity_grid(
+        us_mode=("US" in nii_mode),
+        horizon_months=12,
+        constant_balance_sheet=True,
+    )
+    nii_df = pd.DataFrame(nii_rows)
+    if not nii_df.empty:
+        show = nii_df.rename(columns={
+            "scenario": "Scenario",
+            "shock_bp": "Shock (bp)",
+            "ramp": "Ramp",
+            "nii": "NII ($M)",
+            "d_nii": "ΔNII ($M)",
+            "pct_tier1": "% Tier 1",
+            "pct_base_nii": "% Base NII",
+        })
+        st.dataframe(
+            show.style.format({
+                "NII ($M)": "{:.2f}",
+                "ΔNII ($M)": "{:+.2f}",
+                "% Tier 1": "{:+.2f}",
+                "% Base NII": "{:+.2f}",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            f"Base 12m NII ≈ ${float(nii_df['nii'].iloc[0] - nii_df['d_nii'].iloc[0]):.2f}M · "
+            "Deposits reprice 1:1 with the shock (floored at 0); floaters after next reset; "
+            "MBS CPR is live under the shock."
+        )
+
 
 # ── TAB 3: EVE Waterfall ──────────────────────────────────────────────────────
 with tab3:

@@ -105,7 +105,7 @@ One row per instrument:
 
 **MBS HQLA / NSFR:** Ginnie Mae → LCR Level 1 (0% haircut), NSFR RSF 5%. Fannie/Freddie agency → LCR Level 2A (15% haircut), NSFR RSF 15%. Private-label RMBS → not HQLA; NSFR RSF ~85%. Whole-loan residential mortgages ≥1Y → RSF 65%, **never HQLA**. Encumbered >1Y → RSF 100%. Residual maturity is **contractual** (CPR never feeds LCR/NSFR).
 
-**Mortgage / MBS CPR:** Option-adjusted pricing (Steps A→B→C). **Step A** anchors the mortgage rate to live **FRED PMMS 30Y** (`apply_pmms_anchor`). **Step B** logistic parameters default from `data/calibrated_prepayment_params.json` — fit on Freddie SFLLD samples + PMMS history via `python scripts/calibrate_from_freddie_pmms.py` (place sample files in `data/freddie/`). OAS is discount-only.
+**Mortgage / MBS CPR:** Option-adjusted pricing (Steps A→B→C). **Step A** anchors the mortgage rate to live **FRED PMMS 30Y** (`apply_pmms_anchor`). **Step B** logistic parameters default from `data/calibrated_prepayment_params.json` — fit on Freddie SFLLD samples + PMMS history via `python scripts/calibrate_from_freddie_pmms.py` (place sample files in `data/freddie/`). OAS is discount-only. Step C uses a **fixed level-pay dollar payment** (not re-scaled to the declining balance). Spec: `docs/mbs_prepayment_spec_for_cursor.md`.
 
 **Tip:** When NMD is enabled, leave demand deposits out of the CSV (or they are replaced). Use the CSV for assets + wholesale funding only.
 
@@ -151,9 +151,7 @@ python scripts/create_deposit_data_template.py
 **EVE method:** schedule CFs → slot into 19 BCBS buckets → discount on base curve and shocked curve →  
 `ΔEVE = ΔPV(assets) − ΔPV(liabilities)`.
 
-**NII method:** floating / demand instruments:  
-`ΔNII = ± notional × shock_bp(bucket) / 10,000`.  
-CPR mortgages: extra 1Y prepayments under the shock reinvest at the shocked short rate vs lost contractual coupon.
+**NII:** Accrual engine in `src/nii_engine.py` (12m constant balance sheet, no discounting). BCBS ±200 bp and optional US ±100/300/400 + ramps. Deposits reprice 1:1 with the shock (no NII beta). Scenario ΔNII in the IRRBB detail tab uses this engine.
 
 **Mortgage prepayment:** live OA path in `src/mbs_pricing.py`; calibrate Step-B params with `python -m src.calibrate_prepayment` → `data/calibrated_prepayment_params.json`. Optional HF Chronos via `requirements-hf.txt`.
 
@@ -272,12 +270,13 @@ PV_shocked(i) = Σ_k  CF_i[k] / (1 + r_shocked[k])^t_k
 ΔEVE = Σ_assets (PV_shocked − PV_base) − Σ_liabilities (PV_shocked − PV_base)
 ```
 
-### NII (1-year)
+### NII (1-year accrual)
 
-```
-ΔNII = Σ floating assets notional × shock/10000
-     − Σ floating liabilities notional × shock/10000
-```
+Month-by-month interest under a **constant balance sheet** (BCBS default): runoff
+is reinvested at the shocked market rate for remaining months. **No discounting.**
+Floater NII changes only after next reset; deposits reprice **1:1** with the
+shock (floored at 0; no beta); MBS CPR is live. Optional US grid: ±100/200/300/400 bp + 12m ramps.
+EVE scenario ΔNII maps shocks via the **1Y pillar** (`src/nii_engine.py`).
 
 ### NMD bifurcation
 

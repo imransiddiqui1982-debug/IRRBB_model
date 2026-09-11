@@ -148,16 +148,22 @@ def step_c_flows_and_price(
 ) -> MbsPricingResult:
     """
     Monthly amortisation with live CPR each month → CF vector → OAS-discounted price.
+
+    The scheduled payment is a **fixed dollar amount** computed once from the
+    starting balance and remaining term (standard level-pay mortgage). Recomputing
+    ``balance * payment_factor`` each month against the declining balance is the
+    wrong recurrence and never fully amortizes (see mbs_prepayment_spec §4 / §7.0).
     """
     mortgage_rate, refi_incentive_pp = step_a_mortgage_rate(curve, terms)
     monthly_coupon = float(terms.wac) / 12.0
     n = max(int(terms.wam_months), 1)
+    balance = float(terms.notional)
     if monthly_coupon <= 0:
-        payment_factor = 1.0 / n
+        payment_dollar = balance / n
     else:
         payment_factor = monthly_coupon / (1.0 - (1.0 + monthly_coupon) ** (-n))
+        payment_dollar = balance * payment_factor
 
-    balance = float(terms.notional)
     times_list: list[float] = []
     cfs_list: list[float] = []
     eps = 1e-12
@@ -170,11 +176,12 @@ def step_c_flows_and_price(
         smm = 1.0 - (1.0 - cpr) ** (1.0 / 12.0)
 
         interest = balance * monthly_coupon
-        scheduled_prin = balance * payment_factor - interest
-        scheduled_prin = max(min(scheduled_prin, balance), 0.0)
-        prepayment = (balance - scheduled_prin) * smm
+        scheduled_prin = min(payment_dollar - interest, balance)
+        scheduled_prin = max(scheduled_prin, 0.0)
+        prepayment = max((balance - scheduled_prin) * smm, 0.0)
         if month == n:
-            prepayment = balance - scheduled_prin
+            # Force residual principal on final contractual month
+            prepayment = max(balance - scheduled_prin, 0.0)
         total_cf = interest + scheduled_prin + prepayment
 
         t = month / 12.0

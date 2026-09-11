@@ -106,16 +106,49 @@ def test_step_b_seasoned_cpr(sid, exp_cpr):
     assert cpr_to_psa(cpr) == pytest.approx((exp_cpr / 0.06) * 100, abs=5.0)
 
 
-# ── §7.3 Step C price / WAL ───────────────────────────────────────────────────
+# ── §7.0 Amortization correctness (fixed dollar payment) ─────────────────────
+
+def test_zero_prepayment_fully_amortizes_to_exactly_zero():
+    """Spec §7.0 — level-pay must clear balance in exactly wam_months."""
+    base = _flat_curve(0.04)
+    terms = MbsTerms(
+        notional=300.0,
+        wac=0.055,
+        wam_months=324,
+        pool_age_months=0,
+        anchor_tenor=10.0,
+        spread_to_curve=0.0175,
+        oas=0.005,
+        base_turnover=0.0,
+        max_refi_cpr=0.0,
+        logistic_k=2.2,
+        logistic_midpoint=0.60,
+        seasoning_ramp_months=30,
+    )
+    res = step_c_flows_and_price(base, terms)
+    assert len(res.times) == 324
+    # Reconstruct ending balance from starting notional − all principal-like CF
+    monthly = terms.wac / 12.0
+    bal = float(terms.notional)
+    pay = bal * monthly / (1.0 - (1.0 + monthly) ** (-terms.wam_months))
+    for total in res.cashflows:
+        interest = bal * monthly
+        sched = min(pay - interest, bal)
+        prep = max(float(total) - interest - sched, 0.0)
+        bal = bal - sched - prep
+    assert bal == pytest.approx(0.0, abs=1e-6)
+
+
+# ── §7.3 Step C price / WAL (regenerated after §4 payment bugfix) ──────────
 
 @pytest.mark.parametrize(
     "sid,exp_price,exp_wal",
     [
-        ("BASE", 213.08, 8.02),
-        ("PS_UP", 184.26, 10.27),
-        ("PS_DOWN", 218.65, 3.13),
-        ("STEEPENER", 199.32, 10.03),
-        ("FLATTENER", 211.15, 5.37),
+        ("BASE", 210.98, 5.40),
+        ("PS_UP", 190.45, 7.01),
+        ("PS_DOWN", 216.33, 2.68),
+        ("STEEPENER", 205.14, 6.81),
+        ("FLATTENER", 206.62, 3.96),
     ],
 )
 def test_step_c_price_and_wal(sid, exp_price, exp_wal):
@@ -123,14 +156,8 @@ def test_step_c_price_and_wal(sid, exp_price, exp_wal):
     terms = _spec_pool()
     curve = base if sid == "BASE" else _scenario_curve(base, sid)
     res = step_c_flows_and_price(curve, terms)
-    # Prices within a few $M of the worked example (OAS / interpolant micro-diffs);
-    # PS_DOWN is exact; parallel/steep cases stay within a tight relative band.
-    assert res.price == pytest.approx(exp_price, abs=6.0)
-    assert res.wal == pytest.approx(exp_wal, abs=1.5)
-    # Relative price move vs base should still show negative convexity shape
-    if sid != "BASE":
-        p0 = step_c_flows_and_price(base, terms).price
-        assert abs(res.price - p0) / p0 < 0.20 or sid == "PS_DOWN"
+    assert res.price == pytest.approx(exp_price, abs=2.0)
+    assert res.wal == pytest.approx(exp_wal, abs=0.35)
 
 
 # ── §7.4 Structural regressions ───────────────────────────────────────────────
