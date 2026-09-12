@@ -294,7 +294,7 @@ DOCS_MARKDOWN = """
 
 1. **Choose a template pack** (or upload your own CSV + LCR/NSFR workbook).
 2. **Validate** the balance sheet — fix errors in the editor on the **Inputs** tab.
-3. Set **assumptions** in the sidebar (Tier 1, curve, PMMS, NII horizon, shocks).
+3. Set **assumptions** in the sidebar (Tier 1, curve, NII horizon, shocks).
 4. Click **Apply edits & Run** after changing the grid.
 5. Read the **Run status** strip, then drill into tabs. Enable **Expert mode** for full tables.
 6. **Export pack** downloads instruments, EVE/NII, curve, KR01, and an ALCO one-pager.
@@ -315,4 +315,33 @@ DOCS_MARKDOWN = """
 
 ### BCBS 19 buckets
 Cash flows are generated at payment dates, then slotted into the 19 Annex 2 buckets for gap reporting and non-OA EVE discounting.
+
+## MBS / mortgage prepay — how the model works
+
+Live EVE / KR01 for each option-adjusted MBS or whole loan follows **Steps A → B → C** in `mbs_pricing`. The path re-runs on every curve (including KR01 bumps). There is no portfolio sidebar CPR/PSA override.
+
+### Step A — Mortgage rate & refi incentive
+- Live **FRED PMMS 30Y** anchors the mortgage-rate *level*: each OA pool’s `spread_to_curve` is set so curve(anchor) + spread ≈ PMMS on the base curve. BCBS / KR01 bumps then move the rate 1:1 with the anchor tenor.
+- Refi incentive (pp) = (WAC − mortgage rate) × 100 (WAC and rates as decimals; result in **percentage points**).
+- Positive = in-the-money to refinance; negative = lock-in.
+- Fallback: balance-sheet `spread_to_curve` if PMMS fetch fails.
+
+### Step B — CPR (logistic × seasoning)
+- Logistic refi response (parameters from `data/calibrated_prepayment_params.json` when present — fit via `python -m src.calibrate_prepayment` on loan-level history; otherwise illustrative defaults):
+  - refi_response = max_refi_cpr / (1 + e^(−k × (incentive_pp − midpoint)))
+- **Seasoning ramp** (calibrated `seasoning_ramp_months`, else 30):
+  - seasoning = min((pool_age + m) / ramp_months, 1) for forecast month *m*
+  - Young pools get lower CPR; at full seasoning the ramp is 1.
+- CPR = (base_turnover + refi_response) × seasoning
+- Monthly SMM from CPR drives scheduled principal + prepay cash flows.
+- PSA is only a **reporting label** of that CPR (100 PSA ≡ 6% seasoned CPR). PSA is **not** a pricing input.
+
+### Step C — Price / EVE — where OAS is used
+- Discount each month’s cash flow at curve(t) + OAS.
+- **OAS does not change CPR or PSA.** It only shifts the discount rate, so it moves PV, EVE, and KR01 for a given prepay schedule.
+- Default OAS ≈ 50 bp if blank on the instrument.
+
+### Calibration
+Re-fit Step B with:
+`python -m src.calibrate_prepayment --data your_loans.csv --out data/calibrated_prepayment_params.json`
 """
