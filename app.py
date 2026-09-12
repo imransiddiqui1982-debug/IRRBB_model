@@ -854,7 +854,7 @@ st.divider()
 # ══════════════════════════════════════════════════════════════════════════════
 
 (
-    tab_in, tab0, tab_lcr, tab1, tab2, tab3, tab4, tab5, tab_kr, tab6, tab_docs,
+    tab_in, tab0, tab_lcr, tab1, tab2, tab3, tab4, tab5, tab_kr, tab_ccr, tab6, tab_docs,
 ) = st.tabs([
     "Inputs",
     "NMD Refinement",
@@ -865,6 +865,7 @@ st.divider()
     "Scenario Comparison",
     "Repricing Gap",
     "ALCO / KR01 / Hedges",
+    "Hedge & CCR",
     "Yield Curve",
     "Docs",
 ])
@@ -2044,6 +2045,161 @@ with tab_kr:
                 mime="text/csv",
                 use_container_width=True,
             )
+
+
+# ── TAB: Hedge & CCR (IRS pricing, EE/PFE, CVA, SA-CCR) ───────────────────────
+with tab_ccr:
+    st.markdown(
+        "<p class='section-label'>Hedge & CCR — IRS pricing · EE/PFE · CVA · SA-CCR</p>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Prices the ALCO hedge ladder as vanilla SOFR-style IRS on the active curve, "
+        "then runs economic Monte Carlo EE/PFE + unilateral CVA and Basel SA-CCR EAD. "
+        "Prototype — not a validated XVA engine."
+    )
+
+    from src.cva_pfe import exposure_frame, run_hedge_ccr, saccr_frame
+    from src.key_rate_duration import (
+        designate_key_rate_hedges,
+        proposed_swap_notionals,
+        suggest_key_rate_hedges,
+    )
+
+    with st.spinner("KR01 hedge sizes for CCR…"):
+        _kr_ccr = calc.key_rate_duration_gap()
+        _raw_hr = st.session_state.get("kr_hedge_ratio", 80)
+        _hr = float(_raw_hr) / 100.0 if float(_raw_hr) > 1.5 else float(_raw_hr)
+        _ladder = proposed_swap_notionals(_kr_ccr, hedge_ratio=_hr)
+
+    d2 = float(st.session_state.get("hedge_n_2y", _ladder.get(2.0, 0.0)))
+    d5 = float(st.session_state.get("hedge_n_5y", _ladder.get(5.0, 0.0)))
+    d10 = float(st.session_state.get("hedge_n_10y", _ladder.get(10.0, 0.0)))
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        n2c = st.number_input(
+            "2Y signed $M", value=round(d2, 1), step=5.0, key="ccr_n_2y",
+            help="Positive = pay-fixed (same sign as ALCO playbook).",
+        )
+    with c2:
+        n5c = st.number_input("5Y signed $M", value=round(d5, 1), step=5.0, key="ccr_n_5y")
+    with c3:
+        n10c = st.number_input("10Y signed $M", value=round(d10, 1), step=5.0, key="ccr_n_10y")
+    with c4:
+        run_ccr = st.button("Run pricing & CCR", type="primary", use_container_width=True)
+
+    x1, x2, x3, x4 = st.columns(4)
+    with x1:
+        cds_bp = st.number_input("Counterparty CDS (bp)", value=100.0, min_value=1.0, step=5.0)
+    with x2:
+        recovery = st.number_input("Recovery", value=0.40, min_value=0.0, max_value=0.9, step=0.05)
+    with x3:
+        rate_vol = st.number_input("Rate vol (bp / √y)", value=80.0, min_value=10.0, step=5.0)
+    with x4:
+        collat = st.number_input("Collateral CSA ($M)", value=0.0, step=1.0,
+                                 help="Unmargined if 0. Simple RC = max(V−C, 0).")
+
+    y1, y2 = st.columns(2)
+    with y1:
+        n_paths = st.slider("MC paths", 100, 1000, 400, 100)
+    with y2:
+        pfe_pct = st.slider("PFE percentile", 90, 99, 95, 1)
+
+    notionals_ccr = {2.0: float(n2c), 5.0: float(n5c), 10.0: float(n10c)}
+
+    # Hedge-accounting designation hints (same engine as playbook)
+    _hedge_sug = suggest_key_rate_hedges(_kr_ccr, hedge_ratio=_hr)
+    _desig = designate_key_rate_hedges(_hedge_sug, assets, liabilities)
+    if _desig is not None and not _desig.empty:
+        with st.expander("Designation hints (ASC 815 / ASU 2017-12 — indicative)"):
+            st.dataframe(_desig, use_container_width=True, hide_index=True)
+            st.caption(
+                "Suggests fair-value vs cash-flow designation and a candidate hedged item. "
+                "Not accounting advice — confirm with finance / auditor."
+            )
+
+    if run_ccr or st.session_state.get("ccr_auto_once"):
+        st.session_state["ccr_auto_once"] = True
+        with st.spinner("Pricing IRS · simulating EE/PFE · CVA · SA-CCR…"):
+            report = run_hedge_ccr(
+                curve,
+                notionals_ccr,
+                cds_spread_bp=float(cds_bp),
+                recovery=float(recovery),
+                rate_vol_bp=float(rate_vol),
+                n_paths=int(n_paths),
+                n_steps=16,
+                pfe_percentile=float(pfe_pct),
+                collateral_m=float(collat),
+            )
+        st.session_state["ccr_report"] = report
+
+    report = st.session_state.get("ccr_report")
+    if report is None:
+        st.info("Set notionals and click **Run pricing & CCR**.")
+    elif report.trades_df.empty:
+        st.warning("All notionals are zero — enter a hedge ladder first.")
+    else:
+        s = report.summary
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Portfolio MtM", f"${s['portfolio_mtm_m']:+.3f}M")
+        m2.metric("DV01", f"${s['portfolio_dv01_k']:+.1f}K/bp")
+        m3.metric("CVA", f"${s['cva_m']:.3f}M")
+        m4.metric(f"PFE {int(pfe_pct)}% peak", f"${s['pfe_peak_m']:.3f}M")
+        m5.metric("SA-CCR EAD", f"${s['saccr_ead_m']:.3f}M")
+
+        st.markdown("**Hedge IRS tickets (ATM fixed rate on active curve)**")
+        st.dataframe(report.trades_df, use_container_width=True, hide_index=True)
+
+        exp_df = exposure_frame(report.exposure)
+        fig_ee = go.Figure()
+        fig_ee.add_trace(go.Scatter(
+            x=exp_df["Time (Y)"], y=exp_df["EE ($M)"],
+            name="EE", line=dict(color=BLUE, width=2.5),
+        ))
+        fig_ee.add_trace(go.Scatter(
+            x=exp_df["Time (Y)"], y=exp_df["PFE ($M)"],
+            name=f"PFE {int(pfe_pct)}%", line=dict(color=ORANGE, width=2, dash="dash"),
+        ))
+        fig_ee.add_trace(go.Scatter(
+            x=exp_df["Time (Y)"], y=exp_df["Mean MtM ($M)"],
+            name="Mean MtM", line=dict(color=NAVY, width=1.5, dash="dot"),
+        ))
+        fig_ee.add_hline(y=0, line_color=BORDER, line_width=1)
+        fig_ee.update_layout(
+            **PLOTLY_BASE, height=380,
+            xaxis=dict(**AXIS_STYLE, title="Horizon (years)"),
+            yaxis=dict(**AXIS_STYLE, title="$M"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, bgcolor=BG2),
+        )
+        st.plotly_chart(fig_ee, use_container_width=True)
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**Economic exposure path**")
+            st.dataframe(exp_df, use_container_width=True, hide_index=True)
+            st.caption(
+                f"MC parallel rate shocks · vol={rate_vol:.0f} bp/√y · "
+                f"{n_paths} paths · unilateral CVA uses CDS≈{cds_bp:.0f} bp, "
+                f"recovery={recovery:.0%}."
+            )
+        with col_b:
+            st.markdown("**SA-CCR (regulatory) vs economic PFE**")
+            st.dataframe(saccr_frame(report.saccr), use_container_width=True, hide_index=True)
+            st.caption(
+                "Economic PFE = MC percentile of positive MtM. "
+                "SA-CCR PFE = multiplier × supervisory Add-on (IR hedge set). "
+                "EAD = 1.4 × (RC + SA-CCR PFE)."
+            )
+
+        st.markdown("**How to read this next to EVE**")
+        st.markdown(
+            "- Use **ALCO / KR01 / Hedges → Hedge playbook** for residual ΔEVE after these notionals.\n"
+            "- **CVA** is the expected loss to the swap counterparty — a cost of hedging, "
+            "not an IRRBB capital charge.\n"
+            "- ATM hedges show MtM ≈ 0 at inception; EE/PFE grow with rate volatility and tenor."
+        )
 
 
 # ── TAB 6: Yield Curve ────────────────────────────────────────────────────────

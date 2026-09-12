@@ -344,4 +344,17 @@ Live EVE / KR01 for each option-adjusted MBS or whole loan follows **Steps A →
 ### Calibration
 Re-fit Step B with:
 `python -m src.calibrate_prepayment --data your_loans.csv --out data/calibrated_prepayment_params.json`
+
+## Hedge & CCR (prototype)
+
+The **Hedge & CCR** tab prices the 2Y/5Y/10Y ALCO IRS ladder on the active curve and estimates:
+
+| Output | Method |
+|--------|--------|
+| MtM / DV01 | Annual-pay vanilla IRS on the YieldCurve (ATM fixed rate) |
+| EE / PFE | Monte Carlo parallel rate shocks; PFE = percentile of positive MtM |
+| CVA | Unilateral: (1−R) Σ EE·DF·ΔPD from CDS≈λ·LGD hazard |
+| SA-CCR EAD | BCBS 279 IR hedge-set Add-on; EAD = 1.4×(RC+PFE) |
+
+Economic PFE ≠ SA-CCR PFE. Designation hints reuse the KR01 playbook (indicative only).
 """
