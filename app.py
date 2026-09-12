@@ -2059,7 +2059,16 @@ with tab_ccr:
         "Prototype — not a validated XVA engine."
     )
 
-    from src.cva_pfe import exposure_frame, run_hedge_ccr, saccr_frame
+    from src.cva_pfe import (
+        effectiveness_scatter_frame,
+        eligible_hedged_items,
+        exposure_frame,
+        progressive_frame,
+        prospective_effectiveness,
+        run_hedge_ccr,
+        saccr_frame,
+        trades_from_signed_notionals,
+    )
     from src.key_rate_duration import (
         designate_key_rate_hedges,
         proposed_swap_notionals,
@@ -2108,16 +2117,127 @@ with tab_ccr:
 
     notionals_ccr = {2.0: float(n2c), 5.0: float(n5c), 10.0: float(n10c)}
 
-    # Hedge-accounting designation hints (same engine as playbook)
+    # ── Hedge accounting: designation + prospective / progressive test ────────
+    st.markdown("<p class='section-label'>Hedge accounting — prospective / progressive test</p>",
+                unsafe_allow_html=True)
+    _elig = eligible_hedged_items(assets, liabilities)
+    _elig_names = [i.name for i in _elig] or ["(none)"]
     _hedge_sug = suggest_key_rate_hedges(_kr_ccr, hedge_ratio=_hr)
     _desig = designate_key_rate_hedges(_hedge_sug, assets, liabilities)
+    _default_item = None
+    if _desig is not None and not _desig.empty:
+        for nm in _desig["Hedged item"]:
+            if nm in _elig_names:
+                _default_item = nm
+                break
+    _ix = _elig_names.index(_default_item) if _default_item in _elig_names else 0
+
+    ha1, ha2, ha3, ha4 = st.columns(4)
+    with ha1:
+        hedged_name = st.selectbox(
+            "Hedged item",
+            _elig_names,
+            index=min(_ix, len(_elig_names) - 1),
+            key="ha_hedged_item",
+            help="Balance-sheet instrument designated in the hedge relationship.",
+        )
+    with ha2:
+        ha_desig = st.selectbox(
+            "Designation",
+            ["fair_value", "cash_flow"],
+            index=0,
+            key="ha_desig",
+        )
+    with ha3:
+        r2_min = st.number_input("R² minimum", value=0.80, min_value=0.5, max_value=0.99, step=0.05)
+    with ha4:
+        layer_m = st.number_input(
+            "Layer notional ($M)",
+            value=0.0, min_value=0.0, step=10.0,
+            help="0 = full instrument. Else scale ΔItem (portfolio layer).",
+        )
+
     if _desig is not None and not _desig.empty:
         with st.expander("Designation hints (ASC 815 / ASU 2017-12 — indicative)"):
             st.dataframe(_desig, use_container_width=True, hide_index=True)
-            st.caption(
-                "Suggests fair-value vs cash-flow designation and a candidate hedged item. "
-                "Not accounting advice — confirm with finance / auditor."
-            )
+
+    run_ha = st.button("Run prospective effectiveness", use_container_width=True)
+
+    if run_ha and hedged_name != "(none)":
+        _item = next((i for i in _elig if i.name == hedged_name), None)
+        _trades = trades_from_signed_notionals(notionals_ccr, curve, use_par=True)
+        if _item is None or not _trades:
+            st.warning("Need a hedged item and non-zero IRS notionals.")
+        else:
+            with st.spinner("Prospective / progressive effectiveness…"):
+                ha_res = prospective_effectiveness(
+                    curve,
+                    _item,
+                    _trades,
+                    designation=ha_desig,
+                    r2_min=float(r2_min),
+                    layer_notional_m=float(layer_m) if layer_m > 0 else None,
+                )
+            st.session_state["ha_result"] = ha_res
+
+    ha_res = st.session_state.get("ha_result")
+    if ha_res is not None:
+        status = "PASS" if ha_res.overall_pass else "FAIL"
+        color = GREEN if ha_res.overall_pass else RED
+        st.markdown(
+            f"**Effectiveness: <span style='color:{color}'>{status}</span>** — "
+            f"R²={ha_res.r_squared:.3f} (min {ha_res.r2_min:.2f}) · "
+            f"slope={ha_res.slope:.3f} (band {ha_res.slope_lo:.2f}–{ha_res.slope_hi:.2f}) · "
+            f"dollar offset≈{ha_res.dollar_offset_mean:.3f}",
+            unsafe_allow_html=True,
+        )
+        e1, e2, e3, e4 = st.columns(4)
+        e1.metric("R²", f"{ha_res.r_squared:.3f}",
+                  delta="ok" if ha_res.pass_r2 else "below min", delta_color="normal" if ha_res.pass_r2 else "inverse")
+        e2.metric("Slope b", f"{ha_res.slope:.3f}",
+                  delta="ok" if ha_res.pass_slope else "outside band",
+                  delta_color="normal" if ha_res.pass_slope else "inverse")
+        e3.metric("Intercept a", f"{ha_res.intercept:.4f}")
+        e4.metric("Obs", str(ha_res.n_obs))
+
+        st.caption(
+            f"Regression: ΔHedge = a + b·(−ΔItem) · hedged item **{ha_res.hedged_item}** · "
+            f"hedge **{ha_res.hedge_label}** · designation `{ha_res.designation}`. "
+            "Not accounting advice."
+        )
+
+        sc = effectiveness_scatter_frame(ha_res)
+        fig_ha = go.Figure()
+        fig_ha.add_trace(go.Scatter(
+            x=sc["−ΔItem ($M)"], y=sc["ΔHedge ($M)"],
+            mode="markers+text", text=[f"{s:.0f}bp" for s in ha_res.shocks_bp],
+            textposition="top center",
+            marker=dict(size=10, color=ORANGE),
+            name="Shock scenarios",
+            hovertemplate="−ΔItem %{x:.3f}<br>ΔHedge %{y:.3f}<extra></extra>",
+        ))
+        xs = np.array([float(sc["−ΔItem ($M)"].min()), float(sc["−ΔItem ($M)"].max())], dtype=float)
+        if abs(xs[1] - xs[0]) < 1e-12:
+            xs = np.array([-1.0, 1.0])
+        fig_ha.add_trace(go.Scatter(
+            x=xs, y=ha_res.intercept + ha_res.slope * xs, mode="lines", name="OLS fit",
+            line=dict(color=NAVY, width=2),
+        ))
+        fig_ha.add_trace(go.Scatter(
+            x=xs, y=xs, mode="lines", name="Perfect offset (45°)",
+            line=dict(color=BORDER, width=1, dash="dot"),
+        ))
+        fig_ha.update_layout(
+            **PLOTLY_BASE, height=360,
+            xaxis=dict(**AXIS_STYLE, title="−Δ Hedged item ($M)"),
+            yaxis=dict(**AXIS_STYLE, title="Δ Hedging instrument ($M)"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, bgcolor=BG2),
+        )
+        st.plotly_chart(fig_ha, use_container_width=True)
+
+        st.markdown("**Progressive test** (R² / slope as shock sample expands)")
+        st.dataframe(progressive_frame(ha_res), use_container_width=True, hide_index=True)
+        st.dataframe(sc, use_container_width=True, hide_index=True)
 
     if run_ccr or st.session_state.get("ccr_auto_once"):
         st.session_state["ccr_auto_once"] = True
@@ -2198,6 +2318,7 @@ with tab_ccr:
             "- Use **ALCO / KR01 / Hedges → Hedge playbook** for residual ΔEVE after these notionals.\n"
             "- **CVA** is the expected loss to the swap counterparty — a cost of hedging, "
             "not an IRRBB capital charge.\n"
+            "- Run **prospective effectiveness** above to document hedge accounting (R² / slope).\n"
             "- ATM hedges show MtM ≈ 0 at inception; EE/PFE grow with rate volatility and tenor."
         )
 

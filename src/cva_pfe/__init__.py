@@ -6,6 +6,14 @@ from typing import TYPE_CHECKING
 
 from .cva import CVAResult, compute_cva, hazard_from_cds
 from .exposure import ExposureProfile, simulate_exposure
+from .hedge_effectiveness import (
+    EffectivenessResult,
+    default_shock_grid_bp,
+    effectiveness_scatter_frame,
+    eligible_hedged_items,
+    progressive_frame,
+    prospective_effectiveness,
+)
 from .irs_pricing import (
     IRSTrade,
     par_swap_rate,
@@ -35,6 +43,12 @@ __all__ = [
     "run_hedge_ccr",
     "exposure_frame",
     "saccr_frame",
+    "EffectivenessResult",
+    "prospective_effectiveness",
+    "eligible_hedged_items",
+    "effectiveness_scatter_frame",
+    "progressive_frame",
+    "default_shock_grid_bp",
 ]
 
 

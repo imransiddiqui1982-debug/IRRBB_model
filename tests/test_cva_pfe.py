@@ -76,3 +76,53 @@ def test_exposure_profile_shapes():
     cva = compute_cva(curve, prof, cds_spread_bp=100.0)
     assert cva.cva_m >= 0.0
     assert cva.hazard_rate > 0.0
+
+
+def test_prospective_effectiveness_fixed_bond_vs_pay_fixed():
+    from src.cashflows import Instrument
+    from src.cva_pfe.hedge_effectiveness import prospective_effectiveness
+    from src.cva_pfe.irs_pricing import IRSTrade, par_swap_rate
+
+    curve = YieldCurve()
+    bond = Instrument(
+        name="Fixed 5Y Gov",
+        notional=100.0,
+        coupon_pct=4.5,
+        instrument_type="bullet_fixed",
+        maturity_years=5.0,
+        payment_freq=2,
+        side="asset",
+    )
+    bond.generate_cashflows()
+    k = par_swap_rate(curve, 5.0)
+    swap = IRSTrade(tenor_years=5.0, notional_m=100.0, pay_fixed=True, fixed_rate=k)
+    res = prospective_effectiveness(curve, bond, [swap], designation="fair_value")
+    assert res.n_obs >= 8
+    assert len(res.progressive) >= 2
+    assert 0.0 <= res.r_squared <= 1.0
+    # Pay-fixed vs fixed asset should show positive offset-form slope
+    assert res.slope > 0.0
+    assert res.progressive[-1]["n_obs"] == res.n_obs
+
+
+def test_progressive_expands_sample():
+    from src.cashflows import Instrument
+    from src.cva_pfe.hedge_effectiveness import prospective_effectiveness
+    from src.cva_pfe.irs_pricing import IRSTrade, par_swap_rate
+
+    curve = YieldCurve()
+    bond = Instrument(
+        "B", 50.0, 4.0, "bullet_fixed", 10.0, payment_freq=2, side="asset",
+    )
+    bond.generate_cashflows()
+    k = par_swap_rate(curve, 10.0)
+    res = prospective_effectiveness(
+        curve,
+        bond,
+        [IRSTrade(10.0, 50.0, True, k)],
+        shocks_bp=[-100, -50, 50, 100],
+    )
+    ns = [p["n_obs"] for p in res.progressive]
+    assert ns == sorted(ns)
+    assert ns[0] == 2
+    assert ns[-1] == 4
