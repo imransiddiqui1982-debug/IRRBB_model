@@ -7,6 +7,7 @@ Instrument / YieldCurve stack.
 import os
 import sys
 
+import pandas as pd
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -140,9 +141,43 @@ def test_designate_tags_fair_value_for_payer(flat_curve):
     hedges = suggest_key_rate_hedges(kr, min_abs_kr01_k=0.5)
     tags = designate_key_rate_hedges(hedges, assets, liabs)
     assert not tags.empty
-    assert "fair_value" in set(tags["Designation"]) or "cash_flow" in set(
-        tags["Designation"]
-    )
+    pay_rows = tags[tags["Note"].str.contains("Pay-fixed", na=False)]
+    if pay_rows.empty:
+        # Structure column may only be on hedge suggestion; filter by designation+item
+        pay_rows = tags[tags["Hedged item"] == "Long bond"]
+    assert not pay_rows.empty
+    assert (pay_rows["Designation"] == "fair_value").all()
+    assert (pay_rows["Hedged item"] == "Long bond").all()
+    assert (pay_rows["Alt designation"] == "cash_flow").all()
+    assert (pay_rows["Alt hedged item"] == "Float fund").all()
+
+
+def test_designate_receive_fixed_uses_floating_asset():
+    """Receive-fixed / pay-float → CF hedge of floating asset (not floating liability)."""
+    hedges = pd.DataFrame([{
+        "Tenor": "5Y",
+        "Net KR01 ($K/bp)": -50.0,
+        "Hedge action": "Enter receiver swap",
+        "IRS structure": "Receive-fixed / pay-floating IRS",
+        "Indicative notional ($M)": 100.0,
+        "Target hedge (%)": 80,
+    }])
+    assets = [
+        Instrument("Float loan", 300, 5.0, "bullet_floating", 5.0,
+                   repricing_years=0.25, side="asset"),
+        Instrument("Fixed bond", 200, 4.0, "bullet_fixed", 5.0, side="asset"),
+    ]
+    liabs = [
+        Instrument("Float debt", 250, 5.0, "bullet_floating", 3.0,
+                   repricing_years=0.5, side="liability"),
+        Instrument("Fixed covered", 200, 4.0, "bullet_fixed", 5.0, side="liability"),
+    ]
+    tags = designate_key_rate_hedges(hedges, assets, liabs)
+    assert len(tags) == 1
+    assert tags.iloc[0]["Designation"] == "cash_flow"
+    assert tags.iloc[0]["Hedged item"] == "Float loan"
+    assert tags.iloc[0]["Alt designation"] == "fair_value"
+    assert tags.iloc[0]["Alt hedged item"] == "Fixed covered"
 
 
 def test_live_prepay_path_runs(flat_curve):

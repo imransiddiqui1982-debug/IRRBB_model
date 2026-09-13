@@ -281,16 +281,32 @@ def designate_key_rate_hedges(
     """
     Tag proposed key-rate swaps with indicative hedge-accounting notes.
 
-    Not accounting advice — confirms the treasurer sees accounting consequence
-    next to risk reduction (fair value vs cash-flow hedge).
+    Standard ASC 815-style pairings (prototype / not accounting advice):
+
+    * **Pay-fixed / receive-float**
+        - Primary: fair-value hedge of a **fixed-rate asset**
+        - Alternate: cash-flow hedge of a **floating-rate liability** (lock funding cost)
+    * **Receive-fixed / pay-float**
+        - Primary: cash-flow hedge of a **floating-rate asset** (pay-float offsets asset float)
+        - Alternate: fair-value hedge of a **fixed-rate liability**
+
+    Demand deposits are not used as FV hedged items.
     """
     if hedge_df is None or hedge_df.empty:
         return pd.DataFrame()
 
+    fixed_types = ("bullet_fixed", "amortising", "mbs", "whole_loan")
     fixed_assets = [
         i for i in assets
-        if i.side == "asset"
-        and i.instrument_type in ("bullet_fixed", "amortising", "mbs")
+        if i.side == "asset" and i.instrument_type in fixed_types
+    ]
+    float_assets = [
+        i for i in assets
+        if i.side == "asset" and i.instrument_type == "bullet_floating"
+    ]
+    fixed_liabs = [
+        i for i in liabilities
+        if i.side == "liability" and i.instrument_type in ("bullet_fixed", "amortising")
     ]
     float_liabs = [
         i for i in liabilities
@@ -298,44 +314,77 @@ def designate_key_rate_hedges(
     ]
     nmds = [i for i in liabilities if i.instrument_type == "demand_deposit"]
 
+    def _largest(pool: list[Instrument]) -> Instrument | None:
+        return max(pool, key=lambda p: p.notional) if pool else None
+
     rows = []
     for _, h in hedge_df.iterrows():
         pays_fixed = "Pay-fixed" in str(h.get("IRS structure", ""))
         warn = ""
-        if pays_fixed and fixed_assets:
-            item = max(fixed_assets, key=lambda p: p.notional)
-            designation = "fair_value"
-            mtm_to = "P&L (offset by hedged-item basis adjustment)"
-            note = (
-                "ASU 2017-12; portfolio layer method (ASU 2022-01) for prepayable pools. "
-                "Monitor breach tests if prepayments run fast."
-            )
-        elif (not pays_fixed) and float_liabs:
-            item = max(float_liabs, key=lambda p: p.notional)
-            designation = "cash_flow"
-            mtm_to = "OCI → AOCI, reclassified as flows occur"
-            note = "Hedge of variability in forecasted interest cash flows."
-        elif float_liabs:
-            item = max(float_liabs, key=lambda p: p.notional)
-            designation = "cash_flow"
-            mtm_to = "OCI → AOCI, reclassified as flows occur"
-            note = "Hedge of variability in forecasted interest cash flows."
-        elif fixed_assets:
-            item = max(fixed_assets, key=lambda p: p.notional)
-            designation = "fair_value"
-            mtm_to = "P&L (offset by hedged-item basis adjustment)"
-            note = "Confirm designation with auditor before booking."
+        alt_desig = ""
+        alt_item = "—"
+        alt_note = ""
+
+        if pays_fixed:
+            # Primary: FV of fixed asset; Alt: CF of floating liability
+            item = _largest(fixed_assets)
+            if item is not None:
+                designation = "fair_value"
+                mtm_to = "P&L (offset by hedged-item basis adjustment)"
+                note = (
+                    "Pay-fixed vs fixed-rate asset (FV). "
+                    "ASU 2017-12; portfolio layer (ASU 2022-01) if prepayable."
+                )
+            else:
+                item = _largest(float_liabs)
+                designation = "cash_flow" if item is not None else "undesignated"
+                mtm_to = (
+                    "OCI → AOCI, reclassified as flows occur"
+                    if item is not None else "P&L (full MTM)"
+                )
+                note = (
+                    "No fixed asset found — fallback CF hedge of floating liability "
+                    "(lock funding cost)."
+                    if item is not None else "No eligible hedged item identified."
+                )
+            alt = _largest(float_liabs)
+            if alt is not None and (item is None or alt.name != item.name):
+                alt_desig = "cash_flow"
+                alt_item = alt.name
+                alt_note = "Alt: CF hedge of floating liability (synthetic fixed funding)."
         else:
-            item = None
-            designation = "undesignated"
-            mtm_to = "P&L (full MTM)"
-            note = "No eligible hedged item identified."
+            # Receive-fixed / pay-float
+            # Primary: CF of floating asset (pay-float offsets asset float coupons)
+            # Alt: FV of fixed liability
+            item = _largest(float_assets)
+            if item is not None:
+                designation = "cash_flow"
+                mtm_to = "OCI → AOCI, reclassified as flows occur"
+                note = (
+                    "Receive-fixed / pay-float vs floating-rate asset (CF): "
+                    "swap pay-float offsets variability in asset interest receipts."
+                )
+            else:
+                item = _largest(fixed_liabs)
+                designation = "fair_value" if item is not None else "undesignated"
+                mtm_to = (
+                    "P&L (offset by hedged-item basis adjustment)"
+                    if item is not None else "P&L (full MTM)"
+                )
+                note = (
+                    "No floating asset found — fallback FV hedge of fixed-rate liability."
+                    if item is not None else "No eligible hedged item identified."
+                )
+            alt = _largest(fixed_liabs)
+            if alt is not None and (item is None or alt.name != item.name):
+                alt_desig = "fair_value"
+                alt_item = alt.name
+                alt_note = "Alt: FV hedge of fixed-rate liability."
 
         if nmds and item is not None and item.instrument_type != "demand_deposit":
             warn = (
-                f"NMD book of ${sum(p.notional for p in nmds):,.0f}M drives much of "
-                "this exposure but demand deposits generally cannot be the hedged "
-                "item in a fair-value hedge. Designated against assets / floaters instead."
+                f"NMD book of ${sum(p.notional for p in nmds):,.0f}M may drive EVE, "
+                "but demand deposits generally cannot be the FV hedged item."
             )
 
         rows.append({
@@ -344,7 +393,9 @@ def designate_key_rate_hedges(
             "Designation": designation,
             "Hedged item": item.name if item else "—",
             "MTM to": mtm_to,
-            "Note": note if not warn else f"{note} {warn}",
+            "Alt designation": alt_desig or "—",
+            "Alt hedged item": alt_item,
+            "Note": " ".join(x for x in (note, alt_note, warn) if x),
         })
     return pd.DataFrame(rows)
 

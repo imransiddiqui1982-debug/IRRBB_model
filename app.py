@@ -2034,6 +2034,10 @@ with tab_kr:
             desig = designate_key_rate_hedges(kr_hedge_df, assets, liabilities)
             if not desig.empty:
                 st.markdown("**Indicative hedge-accounting tags** *(not advice)*")
+                st.caption(
+                    "Pay-fixed → FV of fixed asset (alt: CF of floating liability). "
+                    "Receive-fixed / pay-float → CF of floating asset (alt: FV of fixed liability)."
+                )
                 st.dataframe(desig, use_container_width=True, hide_index=True)
 
         st.markdown("**Package grid (% Tier 1)**")
@@ -2179,6 +2183,11 @@ with tab_ccr:
 
     if _desig is not None and not _desig.empty:
         with st.expander("Designation hints (ASC 815 / ASU 2017-12 — indicative)"):
+            st.caption(
+                "Pay-fixed → FV of **fixed asset** (alt: CF of floating liability). "
+                "Receive-fixed / pay-float → CF of **floating asset** "
+                "(pay-float offsets asset float; alt: FV of fixed liability)."
+            )
             st.dataframe(_desig, use_container_width=True, hide_index=True)
 
     run_ha = st.button("Run prospective effectiveness", use_container_width=True)

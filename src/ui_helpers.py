@@ -366,5 +366,11 @@ On **Hedge & CCR**, pick a **hedged item** and the IRS ladder as the **hedging i
 3. **Pass** if R² ≥ threshold (default 0.80) and slope ∈ [0.80, 1.25].
 4. **Progressive** table recomputes R²/slope as the shock sample expands (small shocks → full grid).
 
+**Designation pairings (indicative):**
+| IRS | Primary | Alternate |
+|-----|---------|-----------|
+| Pay-fixed / receive-float | FV of fixed-rate **asset** | CF of floating **liability** |
+| Receive-fixed / pay-float | CF of floating-rate **asset** | FV of fixed-rate **liability** |
+
 Optional **layer notional** scales ΔItem for portfolio-layer style designations. Prototype only — not auditor-ready ASC 815 documentation.
 """
