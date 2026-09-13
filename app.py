@@ -368,11 +368,12 @@ with st.sidebar:
         "Tier 1 Capital (USD M)",
         value=500, min_value=50, max_value=10000, step=50,
     )
-    outlier_pct = st.slider("Outlier |ΔEVE|/T1 %", 10, 20, 15, 1)
-    watch_pct = st.slider("Watch |ΔEVE|/T1 %", 5, 15, 10, 1)
+    # Fixed BCBS-style thresholds (no sidebar override)
+    outlier_pct = 15
+    watch_pct = 10
     st.caption(
-        f"Limits: watch ${tier1 * watch_pct / 100:.0f}M · "
-        f"outlier ${tier1 * outlier_pct / 100:.0f}M"
+        f"Limits: watch ≥{watch_pct}% (${tier1 * watch_pct / 100:.0f}M) · "
+        f"outlier ≥{outlier_pct}% (${tier1 * outlier_pct / 100:.0f}M)"
     )
 
     st.markdown("<p class='section-label'>3 · Data uploads</p>",
@@ -876,7 +877,8 @@ with tab_in:
                 unsafe_allow_html=True)
     st.caption(
         "Edit notionals, coupons, WAC, OAS, resets. Filter, then **Apply edits & Run**. "
-        "Optional columns: `book`, `currency` for filtering."
+        "Optional columns: `book`, `currency` for filtering. "
+        "**`base_cpr` blank/0** = no override — MBS/whole loans use live logistic CPR (Steps A–B)."
     )
     if _bs_issues:
         st.dataframe(pd.DataFrame(_bs_issues), use_container_width=True, hide_index=True)
@@ -989,7 +991,7 @@ with tab_lcr:
     if not _run_ok or liquidity is None:
         st.info("Run the model from **Inputs** first.")
     else:
-        st.markdown("<p class='section-label'>Basel III Liquidity Ratios ??? LCR & NSFR</p>",
+        st.markdown("<p class='section-label'>Basel III Liquidity Ratios — LCR & NSFR</p>",
                     unsafe_allow_html=True)
         if liquidity.source == "workbook":
             st.info(
@@ -1017,12 +1019,12 @@ with tab_lcr:
         st.markdown("<p class='section-label'>Liquidity Coverage Ratio (LCR)</p>",
                     unsafe_allow_html=True)
         st.caption(
-            "LCR = HQLA Stock / Net Cash Outflows (30-day stress) ??? 100%. "
+            "LCR = HQLA Stock / Net Cash Outflows (30-day stress) ≥ 100%. "
             "Inflows capped at 75% of outflows."
         )
 
         lcr_color = GREEN if lcr_result.lcr_pass else RED
-        lcr_status = "PASS ???" if lcr_result.lcr_pass else "FAIL ???"
+        lcr_status = "PASS" if lcr_result.lcr_pass else "FAIL"
         st.markdown(
             f"<h3 style='font-size:15px;color:{NAVY}'>"
             f"LCR = {lcr_result.lcr_pct:.1f}% &nbsp;"
@@ -1071,15 +1073,15 @@ with tab_lcr:
         st.markdown("<p class='section-label'>Net Stable Funding Ratio (NSFR)</p>",
                     unsafe_allow_html=True)
         st.caption(
-            "NSFR = ASF / **tailored RSF** ??? minimum (workbook default 100%). "
+            "NSFR = ASF / **tailored RSF** ≥ minimum (workbook default 100%). "
             "ASF from capital (100%), retail deposits (95%/90%), wholesale by tenor. "
             "RSF line items are weighted first; Category IV banks then apply an "
-            "**RSF reduction** (default 30%) before the ratio ??? so the breakdown "
+            "**RSF reduction** (default 30%) before the ratio — so the breakdown "
             "Total is pre-adjustment, not the NSFR denominator."
         )
 
         nsfr_color = GREEN if nsfr_result.nsfr_pass else RED
-        nsfr_status = "PASS ???" if nsfr_result.nsfr_pass else "FAIL ???"
+        nsfr_status = "PASS" if nsfr_result.nsfr_pass else "FAIL"
         st.markdown(
             f"<h3 style='font-size:15px;color:{NAVY}'>"
             f"NSFR = {nsfr_result.nsfr_pct:.1f}% &nbsp;"
@@ -1114,54 +1116,57 @@ with tab_lcr:
         n3.metric(
             "RSF (tailored)",
             f"${nsfr_result.rsf_total:,.1f}M",
-            delta=f"???{_rsf_tailor_pct:.0f}% Category IV" if _rsf_tailor_pct > 0.5 else None,
+            delta=f"−{_rsf_tailor_pct:.0f}% Category IV" if _rsf_tailor_pct > 0.5 else None,
             delta_color="off",
         )
-        n4.metric("ASF ??? Capital", f"${nsfr_result.asf_capital:,.1f}M")
+        n4.metric("ASF from capital", f"${nsfr_result.asf_capital:,.1f}M")
         n5.metric(
             "Funding Gap",
             f"${nsfr_result.asf_total - nsfr_result.rsf_total:+,.1f}M",
-            help="ASF ??? tailored RSF (the NSFR denominator).",
+            help="ASF minus tailored RSF (the NSFR denominator).",
         )
 
         if nmd_result is not None:
             st.info(
-                f"NMD refinement active ??? LCR outflows and NSFR ASF use behavioural splits "
-                f"({nmd_result.stable_pct * 100:.0f}% stable core, "
+                f"NMD refinement active — LCR outflows and NSFR ASF use behavioural splits "
+                f"(core / rate-sensitive / non-core; "
+                f"{nmd_result.stable_pct * 100:.0f}% stable core, "
                 f"{nmd_result.non_core_pct * 100:.0f}% non-core)."
             )
 
-        col_asf, col_rsf = st.columns(2)
-        with col_asf:
-            st.markdown("**ASF breakdown (funding sources)**")
-            st.dataframe(
-                _with_total_row(nsfr_result.asf_breakdown),
-                use_container_width=True,
-                hide_index=True,
-            )
-        with col_rsf:
-            st.markdown("**RSF breakdown (asset requirements)**")
+        col_a, col_r = st.columns(2)
+        with col_a:
+            st.markdown("**Available Stable Funding (ASF)**")
+            if not nsfr_result.asf_breakdown.empty:
+                st.dataframe(
+                    _with_total_row(nsfr_result.asf_breakdown),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+        with col_r:
+            st.markdown("**Required Stable Funding (RSF)**")
             st.caption(
                 f"Table Total = **pre-adjustment** RSF (${_rsf_pre:,.1f}M). "
                 f"NSFR uses tailored RSF ${nsfr_result.rsf_total:,.1f}M "
                 f"after ~{_rsf_tailor_pct:.0f}% Category IV reduction."
             )
-            st.dataframe(
-                _with_total_row(nsfr_result.rsf_breakdown),
-                use_container_width=True,
-                hide_index=True,
-            )
+            if not nsfr_result.rsf_breakdown.empty:
+                st.dataframe(
+                    _with_total_row(nsfr_result.rsf_breakdown),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
         st.download_button(
-            "??? Download Liquidity Ratios CSV",
+            "Download Liquidity Ratios CSV",
             liquidity.summary.to_csv(index=False),
-            file_name="liquidity_ratios_summary.csv",
+            file_name="liquidity_ratios.csv",
             mime="text/csv",
             use_container_width=True,
         )
 
 
-    # ?????? TAB 1: All scenarios ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+# ── TAB 1: Dashboard ──────────────────────────────────────────────────────────
 with tab1:
     if not _run_ok:
         st.info("Fix balance-sheet errors on **Inputs**, then Apply & Run.")
@@ -1579,13 +1584,28 @@ with tab5:
     tick_vals = list(range(0, N_BUCKETS, tick_step))
     tick_text = [BUCKET_LABELS[i] for i in tick_vals]
 
+    wad = calc.weighted_average_duration_gap()
     total_asset_k = dv01_k["asset_dv01_k"].sum()
     total_liab_k = dv01_k["liability_dv01_k"].sum()
     total_net_k = dv01_k["net_dv01_k"].sum()
-    m_dv1, m_dv2, m_dv3 = st.columns(3)
+    m_dv1, m_dv2, m_dv3, m_dv4, m_dv5, m_dv6 = st.columns(6)
     m_dv1.metric("Total asset DV01", f"${total_asset_k:,.0f}K/bp")
     m_dv2.metric("Total liability DV01", f"${total_liab_k:,.0f}K/bp")
     m_dv3.metric("Total net DV01", f"${total_net_k:+,.0f}K/bp")
+    m_dv4.metric("Asset WAD", f"{wad['asset_wad_years']:.2f}Y")
+    m_dv5.metric("Liability WAD", f"{wad['liability_wad_years']:.2f}Y")
+    m_dv6.metric(
+        "Duration gap",
+        f"{wad['duration_gap_years']:+.2f}Y",
+        help="Asset WAD − Liability WAD (principal/repricing CF weighted).",
+    )
+    st.caption(
+        f"**Weighted average duration (WAD)** = Σ(principal CF × bucket midpoint) / Σ(CF). "
+        f"Duration gap **{wad['duration_gap_years']:+.2f}Y** "
+        f"({'assets longer' if wad['duration_gap_years'] > 0 else 'liabilities longer' if wad['duration_gap_years'] < 0 else 'matched'}). "
+        f"Principal CF stock: assets ${wad['asset_principal_m']:,.0f}M · "
+        f"liabilities ${wad['liability_principal_m']:,.0f}M."
+    )
 
     fig6 = go.Figure()
     fig6.add_trace(go.Bar(

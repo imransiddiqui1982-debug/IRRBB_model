@@ -308,6 +308,18 @@ def test_gap_net_arithmetic(calc):
     assert diff.max() < 1e-9
 
 
+def test_weighted_average_duration_gap(calc):
+    wad = calc.weighted_average_duration_gap()
+    assert wad["asset_wad_years"] >= 0
+    assert wad["liability_wad_years"] >= 0
+    assert abs(
+        wad["duration_gap_years"]
+        - (wad["asset_wad_years"] - wad["liability_wad_years"])
+    ) < 1e-9
+    assert wad["asset_principal_m"] > 0
+    assert wad["liability_principal_m"] > 0
+
+
 def test_dv01_gap_net_arithmetic(calc):
     dv01 = calc.bucket_dv01_gap()
     diff = (

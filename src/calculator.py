@@ -346,6 +346,49 @@ class IRRBBCalculator:
             })
         return pd.DataFrame(rows).set_index("bucket")
 
+    def weighted_average_duration_gap(self) -> dict[str, float]:
+        """
+        Balance-sheet weighted-average duration (WAD) and duration gap.
+
+        Uses principal / repricing / prepayment cash flows only (same set as
+        the DV01 gap), weighted by CF amount × bucket midpoint:
+
+            WAD_side = Σ(CF × t_bucket) / Σ(CF)
+
+        Duration gap (years) = WAD_assets − WAD_liabilities.
+        Positive gap → assets longer than liabilities (typical asset-sensitive book).
+        """
+        def _side_wad(instruments) -> tuple[float, float, float]:
+            num = 0.0
+            den = 0.0
+            notional = 0.0
+            for inst in instruments:
+                notional += max(float(inst.notional), 0.0)
+                for cf in inst.cashflows:
+                    if cf.cf_type not in self._MATURING_CF_TYPES:
+                        continue
+                    amt = abs(float(cf.amount))
+                    if amt <= 0:
+                        continue
+                    t = float(BUCKET_MIDPOINTS[cf.bucket])
+                    num += amt * t
+                    den += amt
+            wad = (num / den) if den > 1e-12 else 0.0
+            return wad, den, notional
+
+        a_wad, a_cf, a_not = _side_wad(self.assets)
+        l_wad, l_cf, l_not = _side_wad(self.liabilities)
+        gap = a_wad - l_wad
+        return {
+            "asset_wad_years": round(a_wad, 3),
+            "liability_wad_years": round(l_wad, 3),
+            "duration_gap_years": round(gap, 3),
+            "asset_principal_m": round(a_cf, 2),
+            "liability_principal_m": round(l_cf, 2),
+            "asset_notional_m": round(a_not, 2),
+            "liability_notional_m": round(l_not, 2),
+        }
+
     def irs_hedge_suggestions(
         self,
         dv01_gap: pd.DataFrame,
