@@ -7,6 +7,7 @@ Fallback: numpy DF + basis-adjusted EUR discount under USD CSA.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -77,31 +78,45 @@ def _rl_nodes(curve: dict[str, float], effective) -> dict:
 
     ``rateslib.dt`` is a plain ``datetime.datetime`` (no ``.add``); advance with
     ``timedelta`` or ``add_tenor`` when available.
+
+    rateslib requires strictly increasing unique node dates — market curves often
+    insert short tenors after long ones, so we always sort + dedupe.
     """
     try:
         from rateslib import add_tenor
     except Exception:
         add_tenor = None
 
-    nodes = {effective: 1.0}
+    # (date, years, df) — keep years so collisions prefer the longer tenor DF
+    pillars: list[tuple] = [(effective, 0.0, 1.0)]
     for lab, rate in curve.items():
-        t = 0.0 if str(lab).upper() in ("ON", "O/N") else tenor_to_years(lab)
+        label = str(lab).upper().strip()
+        try:
+            t = 0.0 if label in ("ON", "O/N", "TN", "SN") else tenor_to_years(label)
+        except ValueError:
+            continue
         if t <= 1e-12:
             continue
         z = float(rate)
         df = 1.0 / ((1.0 + z) ** t) if t >= 1.0 else 1.0 / (1.0 + z * max(t, 1e-8))
-        label = str(lab).upper()
-        if add_tenor is not None and label not in ("ON", "O/N") and (
-            label.endswith("Y") or label.endswith("M") or label.endswith("W")
-        ):
+        d = None
+        if add_tenor is not None and re.fullmatch(r"\d+[YMW]", label):
             try:
                 d = add_tenor(effective, label, "MF", "nyc")
             except Exception:
-                d = effective + timedelta(days=int(round(t * 365.25)))
-        else:
+                d = None
+        if d is None:
             d = effective + timedelta(days=int(round(t * 365.25)))
-        nodes[d] = float(max(df, 1e-8))
-    return nodes
+        # Normalise to midnight so date equality is stable across helpers
+        if hasattr(d, "replace"):
+            d = d.replace(hour=0, minute=0, second=0, microsecond=0)
+        pillars.append((d, t, float(max(df, 1e-8))))
+
+    pillars.sort(key=lambda p: (p[0], p[1]))
+    nodes: dict = {}
+    for d, _t, df in pillars:
+        nodes[d] = df  # later/longer tenor wins on exact date collision
+    return dict(sorted(nodes.items()))
 
 
 def price_xccy_rateslib(
