@@ -358,6 +358,17 @@ The **Hedge & CCR** tab prices the 2Y/5Y/10Y ALCO IRS ladder on the active curve
 
 Economic PFE ≠ SA-CCR PFE. Designation hints reuse the KR01 playbook (indicative only).
 
+## Cross Currency IRS
+
+The **Cross Currency IRS** tab prices **USD/EUR float/float XCCY** on a multi-curve set:
+
+1. Live **SOFR** (NY Fed / USD IRS mids) and **€STR** (ECB / estr.dev).
+2. **EURUSD spot** (Frankfurter / ECB reference).
+3. **FX forwards** via covered-interest parity (proxy for FX-swap points).
+4. **Cross-currency basis** (editable EUR-leg bp curve) → USD-CSA EUR discount.
+
+Engine prefers **rateslib** `XCS` + `FXForwards`; falls back to a numpy multi-curve NPV if rateslib is unavailable. **USDSAR** is scaffolded pending SAIBOR live data.
+
 ## Hedge Accounting (Bloomberg-style tickets)
 
 The **Hedge Accounting** tab:

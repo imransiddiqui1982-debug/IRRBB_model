@@ -1,0 +1,76 @@
+{
+  "as_of": "2026-09-16",
+  "spot": 1.1537,
+  "sofr_on": 0.043,
+  "estr_on": 0.0219,
+  "usd_curve": {
+    "ON": 0.043,
+    "1M": 0.043,
+    "3M": 0.0425,
+    "6M": 0.0415,
+    "1Y": 0.0405,
+    "2Y": 0.039,
+    "3Y": 0.038,
+    "5Y": 0.037,
+    "7Y": 0.0365,
+    "10Y": 0.036
+  },
+  "eur_curve": {
+    "ON": 0.0219,
+    "1M": 0.0219,
+    "3M": 0.021400000000000006,
+    "6M": 0.020400000000000005,
+    "1Y": 0.019400000000000004,
+    "2Y": 0.017900000000000003,
+    "3Y": 0.016900000000000002,
+    "5Y": 0.0159,
+    "7Y": 0.0154,
+    "10Y": 0.0149
+  },
+  "fx_forward": {
+    "1M": 1.155724893735599,
+    "3M": 1.1597533819067989,
+    "6M": 1.1657486388833895,
+    "1Y": 1.1775798018442218,
+    "2Y": 1.2007034176481945,
+    "3Y": 1.2232052917102882,
+    "5Y": 1.2664515979620194,
+    "7Y": 1.307519723776855,
+    "10Y": 1.365563098346388
+  },
+  "fx_swap_pts": {
+    "1M": 20.248937355991092,
+    "3M": 60.533819067989384,
+    "6M": 120.48638883389584,
+    "1Y": 238.79801844221893,
+    "2Y": 470.034176481946,
+    "3Y": 695.0529171028829,
+    "5Y": 1127.515979620195,
+    "7Y": 1538.1972377685504,
+    "10Y": 2118.6309834638805
+  },
+  "xccy_basis_bp": {
+    "1Y": -8.0,
+    "2Y": -10.0,
+    "3Y": -12.0,
+    "5Y": -15.0,
+    "7Y": -16.0,
+    "10Y": -18.0,
+    "15Y": -17.0,
+    "20Y": -16.0,
+    "30Y": -14.0
+  },
+  "basis_is_live": false,
+  "forwards_are_cip": true,
+  "source_notes": [
+    "\u20acSTR ON: api.estr.dev (ECB-sourced)",
+    "EURUSD spot: Frankfurter ECB ref",
+    "USD live curve failed (name 'get_live_yield_curve' is not defined); using stylised SOFR stack",
+    "ECB EUR YC failed (<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)>); building \u20acSTR-anchored flatish curve",
+    "USD live curve failed (name 'get_live_yield_curve' is not defined); using stylised SOFR stack",
+    "EUR curve: USD live shape shifted by (\u20acSTR\u2212SOFR) ON differential",
+    "FX forwards: covered-interest parity from SOFR vs \u20acSTR curve points (proxy for FX-swap mids)",
+    "XCCY basis: indicative EURUSD mid markers (not a broker feed). Override in UI for desk marks; live scrape when available is cached."
+  ],
+  "saved_at": "2026-09-16T17:36:43.793745+00:00"
+}

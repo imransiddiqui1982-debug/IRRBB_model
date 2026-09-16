@@ -862,7 +862,7 @@ st.divider()
 # ══════════════════════════════════════════════════════════════════════════════
 
 (
-    tab_in, tab0, tab_lcr, tab1, tab2, tab3, tab4, tab5, tab_kr, tab_ha, tab_pfe, tab6, tab_docs,
+    tab_in, tab0, tab_lcr, tab1, tab2, tab3, tab4, tab5, tab_kr, tab_ha, tab_pfe, tab_xccy, tab6, tab_docs,
 ) = st.tabs([
     "Inputs",
     "NMD Refinement",
@@ -875,6 +875,7 @@ st.divider()
     "ALCO / KR01 / Hedges",
     "Hedge Accounting",
     "PFE / CVA",
+    "Cross Currency IRS",
     "Yield Curve",
     "Docs",
 ])
@@ -2650,6 +2651,177 @@ with tab_pfe:
                 "Economic PFE ≠ SA-CCR PFE. "
                 f"PFE limit ${pfe_limit:.1f}M · EAD limit ${ead_limit:.1f}M."
             )
+
+
+# ── TAB: Cross Currency IRS ───────────────────────────────────────────────────
+with tab_xccy:
+    st.markdown(
+        "<p class='section-label'>Cross Currency IRS — USD/EUR float/float XCCY</p>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Bloomberg-style multi-curve XCCY: live **SOFR** + **€STR** + **EURUSD spot**, "
+        "CIP **FX forwards**, and **cross-currency basis** (USD-CSA EUR discount). "
+        "Primary engine **rateslib**; numpy fallback if unavailable. "
+        "USDSAR is scaffolded until SAIBOR live quotes are wired."
+    )
+
+    from src.xccy import (
+        XccyTradeSpec,
+        fetch_xccy_market,
+        interpret_user_request,
+        price_cross_currency_swap,
+        tenor_to_years,
+    )
+
+    nl = st.text_input(
+        "Describe the trade (optional)",
+        value="Pay EUR basis on 10mm EUR 5Y quarterly Act/360 MtM XCCY vs USD SOFR",
+        key="xccy_nl",
+        help="Engine parses notional, tenor, frequency, day count, pair.",
+    )
+    if st.button("Parse request → fill ticket", key="xccy_parse"):
+        _parsed = interpret_user_request(nl)
+        st.session_state["xccy_pair"] = _parsed.pair
+        st.session_state["xccy_n"] = float(_parsed.notional) / 1e6
+        st.session_state["xccy_ccy"] = _parsed.notional_ccy
+        st.session_state["xccy_tenor"] = _parsed.tenor
+        st.session_state["xccy_freq"] = {"Q": "Quarterly", "S": "Semi", "A": "Annual", "M": "Monthly"}.get(
+            _parsed.frequency, "Quarterly"
+        )
+        st.session_state["xccy_dc"] = "Act/365F" if "365" in _parsed.day_count else "Act/360"
+        st.success(
+            f"Parsed: {_parsed.pair} · {_parsed.notional_ccy} "
+            f"{_parsed.notional/1e6:.1f}mm · {_parsed.tenor} · {_parsed.frequency} · {_parsed.day_count}"
+        )
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        x_pair = st.selectbox("Pair", ["EURUSD", "USDSAR"], key="xccy_pair")
+    with c2:
+        x_ccy = st.selectbox("Notional CCY", ["EUR", "USD", "SAR"], key="xccy_ccy")
+    with c3:
+        x_n = st.number_input("Notional (mm)", value=10.0, min_value=0.1, step=1.0, key="xccy_n")
+    with c4:
+        x_tenor = st.selectbox(
+            "Tenor",
+            ["1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "15Y", "20Y", "30Y"],
+            index=3,
+            key="xccy_tenor",
+        )
+
+    d1, d2, d3, d4 = st.columns(4)
+    with d1:
+        x_freq = st.selectbox(
+            "Frequency",
+            ["Quarterly", "Semi", "Annual", "Monthly"],
+            key="xccy_freq",
+        )
+    with d2:
+        x_dc = st.selectbox("Day count", ["Act/360", "Act/365F", "30E/360"], key="xccy_dc")
+    with d3:
+        x_mtm = st.checkbox("MtM USD leg", value=True, key="xccy_mtm",
+                            help="Market-standard mark-to-market notional resets on USD.")
+    with d4:
+        x_use_fair = st.checkbox("Solve fair basis", value=True, key="xccy_fair")
+
+    x_spread = st.number_input(
+        "EUR/foreign basis spread (bp)",
+        value=-15.0,
+        step=0.5,
+        disabled=x_use_fair,
+        key="xccy_spread",
+        help="Quoted float spread on the non-USD leg. Ignored when Solve fair basis is on.",
+    )
+
+    st.markdown("<p class='section-label'>Market curves & cross-currency basis</p>",
+                unsafe_allow_html=True)
+    refresh_x = st.button("Refresh live SOFR / €STR / FX / basis", type="primary", key="xccy_refresh")
+
+    if refresh_x or st.session_state.get("xccy_snap") is None:
+        with st.spinner("Fetching SOFR, €STR, EURUSD spot, CIP forwards, XCCY basis…"):
+            try:
+                st.session_state["xccy_snap"] = fetch_xccy_market("EURUSD")
+            except Exception as exc:
+                st.error(f"Market fetch failed: {exc}")
+                st.session_state["xccy_snap"] = None
+
+    snap = st.session_state.get("xccy_snap")
+    if snap is not None:
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("As-of", snap.as_of or "—")
+        m2.metric("SOFR ON", f"{snap.sofr_on * 100:.3f}%")
+        m3.metric("€STR ON", f"{snap.estr_on * 100:.3f}%")
+        m4.metric("EURUSD spot", f"{snap.spot:.4f}")
+        m5.metric(
+            "Basis source",
+            "live/cache" if snap.basis_is_live else "indicative",
+        )
+        with st.expander("Source notes", expanded=False):
+            for note in snap.source_notes:
+                st.caption(f"• {note}")
+
+        # Editable basis curve
+        basis_df = pd.DataFrame([
+            {"Tenor": k, "Basis (bp)": float(v)}
+            for k, v in sorted(snap.xccy_basis_bp.items(), key=lambda kv: tenor_to_years(kv[0]))
+        ])
+        st.caption(
+            "Cross-currency basis on the EUR leg (bp). Edit to desk marks; "
+            "engine re-solves the USD-CSA EUR discount curve."
+        )
+        basis_edit = st.data_editor(basis_df, use_container_width=True, hide_index=True, key="xccy_basis_edit")
+        basis_override = {str(r["Tenor"]): float(r["Basis (bp)"]) for _, r in basis_edit.iterrows()}
+
+        fx_df = pd.DataFrame([
+            {
+                "Tenor": k,
+                "Forward": round(float(snap.fx_forward.get(k, float("nan"))), 6),
+                "Swap pts": round(float(snap.fx_swap_pts.get(k, float("nan"))), 2),
+            }
+            for k in sorted(snap.fx_forward.keys(), key=tenor_to_years)
+        ])
+        st.dataframe(fx_df, use_container_width=True, hide_index=True)
+        if snap.forwards_are_cip:
+            st.caption("FX forwards are **CIP-implied** from SOFR vs €STR (proxy for FX-swap mids).")
+
+        run_x = st.button("Price cross-currency swap", type="primary", use_container_width=True, key="xccy_run")
+        if run_x:
+            freq_map = {"Quarterly": "Q", "Semi": "S", "Annual": "A", "Monthly": "M"}
+            trade = XccyTradeSpec(
+                pair=str(x_pair),
+                notional_ccy=str(x_ccy),
+                notional=float(x_n) * 1e6,
+                tenor=str(x_tenor),
+                frequency=freq_map.get(str(x_freq), "Q"),
+                day_count=str(x_dc).replace("/", ""),
+                mtm=bool(x_mtm),
+                float_spread_bp=None if x_use_fair else float(x_spread),
+            )
+            with st.spinner("Building multi-curve set + XCCY NPV…"):
+                res = price_cross_currency_swap(
+                    trade, snap=snap, basis_override_bp=basis_override,
+                )
+            st.session_state["xccy_result"] = res
+
+        res = st.session_state.get("xccy_result")
+        if res is not None:
+            if res.warnings:
+                for w in res.warnings:
+                    st.warning(w)
+            r1, r2, r3, r4, r5 = st.columns(5)
+            r1.metric("Fair basis", f"{res.fair_basis_bp:+.2f} bp")
+            r2.metric("NPV (USD)", f"${res.npv_usd:,.0f}")
+            r3.metric("NPV (foreign)", f"{res.npv_foreign:,.0f}")
+            r4.metric("Notional USD", f"${res.notional_usd:,.0f}")
+            r5.metric("Engine", res.engine)
+            st.dataframe(pd.DataFrame([res.summary]), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame([res.curves_used]), use_container_width=True, hide_index=True)
+            if res.cashflows:
+                st.markdown("**Cashflows (first rows)**")
+                st.dataframe(pd.DataFrame(res.cashflows), use_container_width=True, hide_index=True)
+    else:
+        st.info("Click **Refresh live SOFR / €STR / FX / basis** to load the market.")
 
 
 # ── TAB 6: Yield Curve ────────────────────────────────────────────────────────
