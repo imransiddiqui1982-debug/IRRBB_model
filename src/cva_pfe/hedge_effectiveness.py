@@ -275,7 +275,8 @@ def _critical_terms_check(
         from .irs_pricing import pay_freq_label
         notes.append(
             f"Pay frequency mismatch: hedge {pay_freq_label(hf)} vs item/HD {pay_freq_label(hd.pay_freq)}"
-        )    if match:
+        )
+    if match:
         notes.append("Critical terms aligned with hypothetical derivative.")
     return {
         "match": match,
