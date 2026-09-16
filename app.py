@@ -2143,7 +2143,21 @@ with tab_ha:
     with j3:
         irs_spread_bp = st.number_input("Float spread (bp)", value=0.0, step=1.0, key="ha_irs_spd")
     with j4:
-        price_irs_btn = st.button("Price IRS ticket", type="primary", use_container_width=True, key="ha_price_irs")
+        _cva_default = float(st.session_state.get("ha_cva_charge_bp", 0.0) or 0.0)
+        irs_cva_bp = st.number_input(
+            "CVA charge (bp)",
+            value=round(_cva_default, 2),
+            min_value=0.0,
+            step=0.25,
+            key="ha_cva_bp",
+            help=(
+                "Counterparty CVA as a running fixed-rate charge. "
+                "Recv-fixed: +bp to par; pay-fixed: −bp. "
+                "Auto-filled from PFE/CVA tab when you apply the charge."
+            ),
+        )
+
+    price_irs_btn = st.button("Price IRS ticket", type="primary", use_container_width=True, key="ha_price_irs")
 
     if price_irs_btn or st.session_state.get("ha_ticket") is None:
         _ticket = price_irs_ticket(
@@ -2155,22 +2169,35 @@ with tab_ha:
             fixed_rate_pct=None if solve_par else float(irs_fixed_pct),
             solve_par=bool(solve_par),
             float_spread_bp=float(irs_spread_bp),
+            cva_charge_bp=float(irs_cva_bp),
         )
         st.session_state["ha_ticket"] = _ticket
+        st.session_state["ha_cva_charge_bp"] = float(irs_cva_bp)
         # Keep PFE tab notionals in sync (signed)
         _signed = float(irs_notional) if irs_side.startswith("Pay-fixed") else -float(irs_notional)
         st.session_state["pfe_signed_notionals"] = {float(irs_tenor): _signed}
 
     ticket = st.session_state["ha_ticket"]
-    t1, t2, t3, t4, t5 = st.columns(5)
-    t1.metric("Par rate", f"{ticket.par_rate * 100:.4f}%")
-    t2.metric("Fixed used", f"{ticket.fixed_rate_used * 100:.4f}%")
-    t3.metric("NPV / MtM", f"${ticket.mtm_m:+.6f}M",
-              delta="at par" if ticket.npv_is_par else "off-market",
-              delta_color="normal" if ticket.npv_is_par else "off")
-    t4.metric("DV01", f"${ticket.dv01_k:+.1f}K/bp")
-    t5.metric("At par", "Yes" if ticket.npv_is_par else "No")
+    t1, t2, t3, t4, t5, t6 = st.columns(6)
+    t1.metric("Par (ex-CVA)", f"{ticket.par_rate * 100:.4f}%")
+    _cva_par = ticket.cva_adjusted_par if ticket.cva_adjusted_par is not None else ticket.par_rate
+    t2.metric("CVA-adj par", f"{_cva_par * 100:.4f}%",
+              delta=f"{ticket.cva_charge_bp:+.2f} bp" if ticket.cva_charge_bp else "0 bp")
+    t3.metric("Fixed used", f"{ticket.fixed_rate_used * 100:.4f}%")
+    t4.metric("NPV / MtM", f"${ticket.mtm_m:+.6f}M",
+              delta="CVA offset" if ticket.cva_charge_bp and abs(ticket.mtm_m) > 1e-6 else (
+                  "at mid" if ticket.npv_is_par else "off-market"
+              ),
+              delta_color="normal")
+    t5.metric("DV01", f"${ticket.dv01_k:+.1f}K/bp")
+    t6.metric("CVA charge", f"{ticket.cva_charge_bp:.2f} bp")
     st.dataframe(pd.DataFrame([ticket.summary_row]), use_container_width=True, hide_index=True)
+    if ticket.cva_charge_bp:
+        st.caption(
+            f"CVA charge **{ticket.cva_charge_bp:.2f} bp** baked into fixed rate "
+            f"(annuity {ticket.annuity:.3f}). Risk-free MtM ≈ CVA compensation; "
+            "not a full XVA stack."
+        )
 
     # ── Hedged item ticket ────────────────────────────────────────────────────
     st.markdown("<p class='section-label'>2 · Hedged-item ticket</p>",
@@ -2406,9 +2433,10 @@ with tab_pfe:
         unsafe_allow_html=True,
     )
     st.caption(
-        "Counterparty credit risk on the hedge IRS: economic EE/PFE, unilateral CVA, "
-        "and Basel SA-CCR EAD. Notionals default from the **Hedge Accounting** ticket "
-        "or the KR01 ladder. Also see the Cursor canvas for a standalone PFE/CVA view."
+        "Counterparty credit risk on the hedge IRS: economic EE/PFE, unilateral CVA ($ and bp), "
+        "and Basel SA-CCR EAD. CVA bp = running fixed-rate charge for IRS pricing "
+        "(apply to the Hedge Accounting ticket). Notionals default from the HA ticket "
+        "or KR01 ladder."
     )
 
     from src.cva_pfe import exposure_frame, run_hedge_ccr, saccr_frame
@@ -2506,21 +2534,42 @@ with tab_pfe:
         s = report.summary
         peak = float(s["pfe_peak_m"])
         ead = float(s["saccr_ead_m"])
+        cva_bp = float(s.get("cva_bp", getattr(report.cva, "cva_bp", 0.0) or 0.0))
         pfe_ok = peak <= float(pfe_limit)
         ead_ok = ead <= float(ead_limit)
         m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("Portfolio MtM", f"${s['portfolio_mtm_m']:+.3f}M")
         m2.metric("DV01", f"${s['portfolio_dv01_k']:+.1f}K/bp")
         m3.metric("CVA", f"${s['cva_m']:.3f}M")
-        m4.metric(f"PFE {int(pfe_pct)}% peak", f"${peak:.3f}M",
+        m4.metric("CVA charge", f"{cva_bp:.2f} bp")
+        m5.metric(f"PFE {int(pfe_pct)}% peak", f"${peak:.3f}M",
                   delta="within limit" if pfe_ok else "BREACH",
                   delta_color="normal" if pfe_ok else "inverse")
-        m5.metric("SA-CCR EAD", f"${ead:.3f}M",
+        m6.metric("SA-CCR EAD", f"${ead:.3f}M",
                   delta="within limit" if ead_ok else "BREACH",
                   delta_color="normal" if ead_ok else "inverse")
-        m6.metric("Limits", f"PFE {pfe_limit:.0f} / EAD {ead_limit:.0f}")
 
-        st.markdown("**IRS tickets**")
+        _dv_abs = float(s.get("portfolio_dv01_abs_k", abs(float(s["portfolio_dv01_k"]))))
+        st.caption(
+            f"CVA **{cva_bp:.2f} bp** = ${s['cva_m']:.4f}M ÷ (Σ|DV01| {_dv_abs:.1f} $K/bp). "
+            "Recv-fixed: add to par; pay-fixed: subtract from par."
+        )
+        apply_cva = st.button(
+            f"Apply {cva_bp:.2f} bp CVA charge to Hedge Accounting IRS ticket",
+            use_container_width=True,
+            key="pfe_apply_cva",
+        )
+        if apply_cva:
+            st.session_state["ha_cva_charge_bp"] = float(cva_bp)
+            st.session_state["ha_cva_bp"] = float(cva_bp)  # widget key
+            # Force reprice on next HA view
+            st.session_state.pop("ha_ticket", None)
+            st.success(
+                f"CVA charge **{cva_bp:.2f} bp** sent to Hedge Accounting. "
+                "Open that tab and click **Price IRS ticket** (or it auto-reprices)."
+            )
+
+        st.markdown("**IRS tickets** (with CVA-adjusted fixed suggestion)")
         st.dataframe(report.trades_df, use_container_width=True, hide_index=True)
 
         exp_df = exposure_frame(report.exposure)

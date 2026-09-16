@@ -65,12 +65,14 @@ def run_hedge_ccr(
     rows = []
     mtm_tot = 0.0
     dv01_tot = 0.0
+    dv01_abs = 0.0
     for tr in trades:
         mtm = swap_mtm_m(curve, tr)
         dv = swap_dv01_k(curve, tr)
         par = par_swap_rate(curve, tr.tenor_years, tr.start_years)
         mtm_tot += mtm
         dv01_tot += dv
+        dv01_abs += abs(dv)
         rows.append({
             "Trade": tr.label,
             "Tenor (Y)": tr.tenor_years,
@@ -92,14 +94,33 @@ def run_hedge_ccr(
         pfe_percentile=pfe_percentile,
         seed=seed,
     )
-    cva = compute_cva(curve, profile, cds_spread_bp=cds_spread_bp, recovery=recovery)
+    # |DV01| so pay/recv offsets do not zero the CVA running spread
+    cva = compute_cva(
+        curve,
+        profile,
+        cds_spread_bp=cds_spread_bp,
+        recovery=recovery,
+        dv01_k=dv01_abs,
+    )
+    cva_bp = float(cva.cva_bp)
     saccr = saccr_irs_portfolio(trades, mtm_tot, collateral_m=collateral_m)
+
+    # Suggest CVA-adjusted fixed rates per ticket (recv +bp / pay −bp)
+    from .cva import apply_cva_charge_to_fixed
+    for row in rows:
+        mid = float(row["Fixed rate %"]) / 100.0
+        pay = row["Side"] == "Pay-fixed"
+        adj = apply_cva_charge_to_fixed(mid, pay_fixed=pay, cva_charge_bp=cva_bp)
+        row["CVA charge (bp)"] = round(cva_bp, 2)
+        row["CVA-adj fixed %"] = round(adj * 100.0, 4)
 
     summary = {
         "n_trades": len(trades),
         "portfolio_mtm_m": round(mtm_tot, 4),
         "portfolio_dv01_k": round(dv01_tot, 2),
+        "portfolio_dv01_abs_k": round(dv01_abs, 2),
         "cva_m": round(cva.cva_m, 4),
+        "cva_bp": round(cva_bp, 2),
         "epe_m": round(cva.epe_m, 4),
         "pfe_peak_m": round(float(profile.pfe_m.max()), 4),
         "saccr_ead_m": round(saccr.ead_m, 4),

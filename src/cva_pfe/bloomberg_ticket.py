@@ -80,6 +80,24 @@ def swap_mtm_freq_m(
     return float(mtm_unit * N)
 
 
+def swap_annuity(
+    curve: YieldCurve,
+    tenor_years: float,
+    pay_freq: int = 2,
+    start_years: float = 0.0,
+) -> float:
+    """Level annuity Σ DF(t_i)·Δt for converting $ CVA → running bp."""
+    T = float(tenor_years)
+    t0 = float(start_years)
+    freq = max(int(pay_freq), 1)
+    if T <= 0:
+        return 0.0
+    n = max(int(round(T * freq)), 1)
+    dt = T / n
+    payment_times = [t0 + (i + 1) * dt for i in range(n)]
+    return float(sum(discount_factor(curve, t) for t in payment_times) * dt)
+
+
 @dataclass
 class IRSTicketResult:
     trade: IRSTrade
@@ -91,6 +109,9 @@ class IRSTicketResult:
     float_spread_bp: float
     npv_is_par: bool
     summary_row: dict
+    cva_charge_bp: float = 0.0
+    annuity: float = 0.0
+    cva_adjusted_par: float | None = None
 
 
 def price_irs_ticket(
@@ -103,20 +124,30 @@ def price_irs_ticket(
     fixed_rate_pct: float | None = None,
     solve_par: bool = True,
     float_spread_bp: float = 0.0,
+    cva_charge_bp: float = 0.0,
     start_years: float = 0.0,
     name: str = "",
 ) -> IRSTicketResult:
     """
     Price one IRS ticket. If ``solve_par`` (or fixed rate blank), set K = par
     so NPV ≈ 0 at inception (Bloomberg SWPM-style).
+
+    ``cva_charge_bp`` adjusts the fixed rate away from mid so risk-free MtM
+    compensates unilateral counterparty CVA (recv-fixed +bp / pay-fixed −bp).
     """
+    from .cva import apply_cva_charge_to_fixed
+
     par = par_swap_rate_freq(curve, tenor_years, pay_freq, start_years)
+    annuity = swap_annuity(curve, tenor_years, pay_freq, start_years)
+    cva_bp = float(cva_charge_bp or 0.0)
+    cva_par = apply_cva_charge_to_fixed(par, pay_fixed=pay_fixed, cva_charge_bp=cva_bp)
+
     if solve_par or fixed_rate_pct is None:
-        k = par
-        at_par = True
+        k = cva_par if abs(cva_bp) > 1e-12 else par
+        at_par = abs(cva_bp) < 1e-12
     else:
         k = float(fixed_rate_pct) / 100.0
-        at_par = abs(k - par) < 1e-8 and abs(float_spread_bp) < 1e-9
+        at_par = abs(k - par) < 1e-8 and abs(float_spread_bp) < 1e-9 and abs(cva_bp) < 1e-12
 
     mtm = swap_mtm_freq_m(
         curve,
@@ -149,12 +180,15 @@ def price_irs_ticket(
         "Notional ($M)": round(notional_m, 2),
         "Tenor (Y)": tenor_years,
         "Pay freq": pay_freq,
-        "Par %": round(par * 100.0, 4),
+        "Par % (ex-CVA)": round(par * 100.0, 4),
+        "CVA charge (bp)": round(cva_bp, 2),
+        "CVA-adj par %": round(cva_par * 100.0, 4),
         "Fixed % used": round(k * 100.0, 4),
         "Float spread (bp)": round(float_spread_bp, 2),
+        "Annuity": round(annuity, 4),
         "NPV / MtM ($M)": round(mtm, 6),
         "DV01 ($K/bp)": round(dv, 2),
-        "At par (NPV≈0)": "Yes" if at_par and abs(mtm) < 1e-4 else "No",
+        "At mid (NPV≈0)": "Yes" if at_par and abs(mtm) < 1e-4 else "No",
     }
     return IRSTicketResult(
         trade=trade,
@@ -166,6 +200,9 @@ def price_irs_ticket(
         float_spread_bp=float_spread_bp,
         npv_is_par=bool(at_par and abs(mtm) < 1e-4),
         summary_row=row,
+        cva_charge_bp=cva_bp,
+        annuity=annuity,
+        cva_adjusted_par=cva_par,
     )
 
 

@@ -9,10 +9,18 @@ from .bloomberg_ticket import (
     build_manual_hedged_item,
     par_swap_rate_freq,
     price_irs_ticket,
+    swap_annuity,
     swap_mtm_freq_m,
     trades_from_tickets,
 )
-from .cva import CVAResult, compute_cva, hazard_from_cds
+from .cva import (
+    CVAResult,
+    apply_cva_charge_to_fixed,
+    compute_cva,
+    cva_running_spread_bp,
+    cva_running_spread_bp_from_dv01,
+    hazard_from_cds,
+)
 from .exposure import ExposureProfile, simulate_exposure
 from .irs_pricing import (
     IRSTrade,
@@ -38,6 +46,9 @@ __all__ = [
     "CVAResult",
     "compute_cva",
     "hazard_from_cds",
+    "cva_running_spread_bp",
+    "cva_running_spread_bp_from_dv01",
+    "apply_cva_charge_to_fixed",
     "SACCRResult",
     "saccr_irs_portfolio",
     "HedgeCCRReport",
@@ -56,6 +67,7 @@ __all__ = [
     "build_manual_hedged_item",
     "par_swap_rate_freq",
     "swap_mtm_freq_m",
+    "swap_annuity",
     "trades_from_tickets",
 ]
 

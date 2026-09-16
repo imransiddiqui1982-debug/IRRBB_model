@@ -78,6 +78,46 @@ def test_exposure_profile_shapes():
     assert cva.hazard_rate > 0.0
 
 
+def test_cva_to_bps_and_irs_charge():
+    from src.cva_pfe.bloomberg_ticket import price_irs_ticket, swap_annuity
+    from src.cva_pfe.cva import (
+        apply_cva_charge_to_fixed,
+        cva_running_spread_bp,
+        cva_running_spread_bp_from_dv01,
+    )
+
+    # Annuity path: $0.05M CVA on 100 × A=4.5 → ≈1.111 bp
+    bp = cva_running_spread_bp(0.05, annuity=4.5, notional_m=100.0)
+    assert abs(bp - 0.05 / (100.0 * 4.5 * 1e-4)) < 1e-9
+    assert abs(bp - 1.111111111111111) < 1e-9
+
+    # DV01 path: $0.05M / ($5K/bp) = 10 bp
+    assert abs(cva_running_spread_bp_from_dv01(0.05, 5.0) - 10.0) < 1e-9
+
+    curve = YieldCurve()
+    charge = 5.0
+    recv = apply_cva_charge_to_fixed(0.04, pay_fixed=False, cva_charge_bp=charge)
+    pay = apply_cva_charge_to_fixed(0.04, pay_fixed=True, cva_charge_bp=charge)
+    assert abs(recv - (0.04 + 0.0005)) < 1e-12
+    assert abs(pay - (0.04 - 0.0005)) < 1e-12
+
+    ticket = price_irs_ticket(
+        curve,
+        notional_m=100.0,
+        tenor_years=5.0,
+        pay_fixed=False,
+        pay_freq=2,
+        solve_par=True,
+        cva_charge_bp=charge,
+    )
+    assert ticket.cva_charge_bp == charge
+    assert ticket.fixed_rate_used > ticket.par_rate
+    assert abs(ticket.fixed_rate_used - ticket.cva_adjusted_par) < 1e-12
+    assert ticket.annuity == swap_annuity(curve, 5.0, 2)
+    # Positive MtM offsets CVA when receiving higher fixed
+    assert ticket.mtm_m > 0.0
+
+
 def test_prospective_effectiveness_fixed_bond_vs_pay_fixed():
     from src.cashflows import Instrument
     from src.cva_pfe.hedge_effectiveness import prospective_effectiveness
