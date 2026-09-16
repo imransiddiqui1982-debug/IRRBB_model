@@ -67,10 +67,16 @@ def _bump_curve(curve: YieldCurve, shock_bp: float) -> YieldCurve:
     tenors = list(getattr(curve, "_ref_tenors", []) or [])
     rates = list(getattr(curve, "_ref_rates", []) or [])
     if len(tenors) >= 2:
-        return YieldCurve(
+        out = YieldCurve(
             ref_tenors=tenors,
             ref_rates=[r + shock_bp / 10_000.0 for r in rates],
         )
+        out._df_tenors = tenors
+        out._dfs = [
+            1.0 if t < 1e-12 else float(1.0 / (1.0 + z) ** t)
+            for t, z in zip(tenors, out._ref_rates)
+        ]
+        return out
     from copy import deepcopy
     out = deepcopy(curve)
     out.base_rates = np.asarray(curve.base_rates, dtype=float) + shock_bp / 10_000.0
@@ -114,15 +120,22 @@ def eligible_hedged_items(
 
 
 def _trade_pay_freq(tr: IRSTrade) -> int:
-    return max(int(getattr(tr, "pay_freq", 1) or 1), 1)
+    return int(getattr(tr, "pay_freq", 1) or 0)
+
+
+def _trade_float_freq(tr: IRSTrade) -> int:
+    return int(getattr(tr, "float_pay_freq", 2) or 2)
 
 
 def _hedge_mtm(curve: YieldCurve, trades: Sequence[IRSTrade]) -> float:
     total = 0.0
     for tr in trades:
         freq = _trade_pay_freq(tr)
+        ffreq = _trade_float_freq(tr)
         k = float(tr.fixed_rate) if tr.fixed_rate is not None else par_swap_rate_freq(
             curve, tr.tenor_years, freq, tr.start_years,
+            float_pay_freq=ffreq,
+            float_spread_bp=float(getattr(tr, "float_spread_bp", 0.0) or 0.0),
         )
         total += swap_mtm_freq_m(
             curve,
@@ -133,6 +146,7 @@ def _hedge_mtm(curve: YieldCurve, trades: Sequence[IRSTrade]) -> float:
             pay_freq=freq,
             start_years=tr.start_years,
             float_spread_bp=float(getattr(tr, "float_spread_bp", 0.0) or 0.0),
+            float_pay_freq=ffreq,
         )
     return float(total)
 
@@ -153,15 +167,25 @@ def interest_cashflow_pv(instrument: Instrument, curve: YieldCurve) -> float:
 
     Floating: each period uses simply compounded forward × notional × dt.
     Fixed / other: contractual coupon on notional until maturity.
+    ``payment_freq <= 0``: single interest accrual at maturity.
     """
+    from .irs_pricing import discount_factor as _df
+
     N = float(instrument.notional)
     T = float(instrument.maturity_years)
-    freq = max(int(instrument.payment_freq or 2), 1)
+    freq = int(instrument.payment_freq or 0)
     if N <= 0 or T <= 0:
         return 0.0
+    itype = str(instrument.instrument_type)
+    if freq <= 0:
+        if itype == "bullet_floating":
+            rate = _simple_forward(curve, 0.0, T)
+        else:
+            rate = float(instrument.coupon_pct) / 100.0
+        return float(N * rate * T * _df(curve, T))
+
     n = max(int(round(T * freq)), 1)
     dt = T / n
-    itype = str(instrument.instrument_type)
     total = 0.0
     for i in range(n):
         t0 = i * dt
@@ -171,7 +195,7 @@ def interest_cashflow_pv(instrument: Instrument, curve: YieldCurve) -> float:
         else:
             rate = float(instrument.coupon_pct) / 100.0
         cf = N * rate * dt
-        total += cf * discount_factor(curve, t1)
+        total += cf * _df(curve, t1)
     return float(total)
 
 
@@ -187,10 +211,13 @@ def build_hypothetical_derivative(
     * Floating **asset** → receive-fixed / pay-float (lock asset yield)
     * Floating **liability** → pay-fixed / receive-float (lock funding cost)
     * Fixed asset/liability → pay-fixed / receive-fixed respectively as FV-style HD fallback
+
+    Item ``payment_freq=0`` (at maturity) → HD fixed leg also at maturity;
+    float leg defaults to semi.
     """
     N = float(layer_notional_m) if layer_notional_m and layer_notional_m > 0 else float(hedged_item.notional)
     T = float(hedged_item.maturity_years)
-    freq = max(int(hedged_item.payment_freq or 2), 1)
+    freq = int(hedged_item.payment_freq or 0)
     side = str(hedged_item.side).lower()
     itype = str(hedged_item.instrument_type)
 
@@ -199,19 +226,21 @@ def build_hypothetical_derivative(
     elif itype == "bullet_floating" and side == "liability":
         pay_fixed = True
     elif side == "asset":
-        pay_fixed = True  # FV-style: pay-fixed vs fixed asset
+        pay_fixed = True
     else:
-        pay_fixed = False  # receive-fixed vs fixed liability
+        pay_fixed = False
 
-    par = par_swap_rate_freq(curve, T, freq)
+    float_freq = 2
+    par = par_swap_rate_freq(curve, T, freq, float_pay_freq=float_freq)
     return IRSTrade(
         tenor_years=T,
         notional_m=abs(N),
         pay_fixed=pay_fixed,
         fixed_rate=par,
         start_years=0.0,
-        name=f"HD {('Pay' if pay_fixed else 'Recv')}-fixed {T:g}Y {freq}x",
+        name=f"HD {('Pay' if pay_fixed else 'Recv')}-fixed {T:g}Y",
         pay_freq=freq,
+        float_pay_freq=float_freq,
     )
 
 
@@ -243,8 +272,10 @@ def _critical_terms_check(
     hf = _trade_pay_freq(tr)
     if hf != hd.pay_freq:
         match = False
-        notes.append(f"Pay frequency mismatch: hedge {hf}x vs item/HD {hd.pay_freq}x")
-    if match:
+        from .irs_pricing import pay_freq_label
+        notes.append(
+            f"Pay frequency mismatch: hedge {pay_freq_label(hf)} vs item/HD {pay_freq_label(hd.pay_freq)}"
+        )    if match:
         notes.append("Critical terms aligned with hypothetical derivative.")
     return {
         "match": match,

@@ -505,7 +505,7 @@ def run_model(
     pmms_rate_override: float | None,
     outlier_thr: float,
     watch_thr: float,
-    _model_version: int = 16,
+    _model_version: int = 17,
 ):
     if csv_bytes:
         assets, liabilities = load_instruments_from_csv(io.BytesIO(csv_bytes))
@@ -520,9 +520,16 @@ def run_model(
         )
 
     if curve_tenors and curve_rates:
-        curve = YieldCurve(ref_tenors=list(curve_tenors), ref_rates=list(curve_rates))
+        from src.sofr_bootstrap import bootstrap_numpy_sofr
+        quotes = {float(t): float(r) for t, r in zip(curve_tenors, curve_rates)}
+        curve = bootstrap_numpy_sofr(quotes, swap_freq=2).curve
     else:
-        curve = YieldCurve()
+        from src.sofr_bootstrap import bootstrap_numpy_sofr
+        from src.yield_curve import _REF_TENORS, _REF_RATES
+        curve = bootstrap_numpy_sofr(
+            {float(t): float(r) for t, r in zip(_REF_TENORS, _REF_RATES) if float(t) > 0},
+            swap_freq=2,
+        ).curve
 
     from src.mbs_pricing import apply_pmms_anchor
     pmms_meta = apply_pmms_anchor(
@@ -2079,10 +2086,12 @@ with tab_ha:
         unsafe_allow_html=True,
     )
     st.caption(
-        "Bloomberg SWPM-style workflow: enter IRS terms (solve par so NPV≈0), "
-        "enter the hedged-item ticket, then run prospective / progressive effectiveness. "
-        "**Fair value** = ΔHedge vs −ΔItem PV; **cash flow** = hypothetical-derivative (HD) method "
-        "for floating items. PFE / CVA live on the **PFE / CVA** tab. Prototype — not accounting advice."
+        "Bloomberg SWPM-style workflow on a **bootstrapped SOFR zero / DF curve**: "
+        "enter IRS terms (fixed freq can be **At maturity**; float often semi), "
+        "enter the hedged-item ticket (at-maturity deposit = one payment date), "
+        "then run prospective / progressive effectiveness. "
+        "**Fair value** = ΔHedge vs −ΔItem PV; **cash flow** = hypothetical-derivative method. "
+        "PFE / CVA live on the **PFE / CVA** tab. Prototype — not accounting advice."
     )
 
     from src.cva_pfe import (
@@ -2127,38 +2136,55 @@ with tab_ha:
     with i3:
         irs_tenor = st.selectbox("Tenor (Y)", [1.0, 2.0, 3.0, 5.0, 7.0, 10.0], index=3, key="ha_irs_tenor")
     with i4:
-        irs_freq = st.selectbox("Pay frequency", [1, 2, 4, 12], index=1, key="ha_irs_freq",
-                                format_func=lambda x: {1: "Annual", 2: "Semi", 4: "Quarterly", 12: "Monthly"}[x])
+        _freq_opts = [0, 1, 2, 4, 12]
+        _freq_lab = {0: "At maturity", 1: "Annual", 2: "Semi", 4: "Quarterly", 12: "Monthly"}
+        irs_freq = st.selectbox(
+            "Fixed pay frequency",
+            _freq_opts,
+            index=0,  # default at maturity for bullet deposit hedges
+            key="ha_irs_freq",
+            format_func=lambda x: _freq_lab[x],
+            help="At maturity = one fixed cashflow at T (Bloomberg bullet). Float frequency is separate.",
+        )
 
     j1, j2, j3, j4 = st.columns(4)
     with j1:
-        solve_par = st.checkbox("Solve par (NPV ≈ 0)", value=True, key="ha_solve_par",
-                                help="Like Bloomberg SWPM: set fixed rate = par so MtM≈0 at inception.")
+        irs_float_freq = st.selectbox(
+            "Float pay frequency",
+            _freq_opts,
+            index=2,  # semi
+            key="ha_irs_flt_freq",
+            format_func=lambda x: _freq_lab[x],
+        )
     with j2:
+        solve_par = st.checkbox("Solve par (NPV ≈ 0)", value=True, key="ha_solve_par",
+                                help="Like Bloomberg SWPM: set fixed rate = par on the zero curve so MtM≈0.")
+    with j3:
         irs_fixed_pct = st.number_input(
             "Fixed rate % (manual)", value=0.0, step=0.01, format="%.4f",
             disabled=solve_par, key="ha_irs_fixed",
             help="Ignored when Solve par is on.",
         )
-    with j3:
-        irs_spread_bp = st.number_input("Float spread (bp)", value=0.0, step=1.0, key="ha_irs_spd")
     with j4:
-        _cva_default = float(st.session_state.get("ha_cva_charge_bp", 0.0) or 0.0)
-        irs_cva_bp = st.number_input(
-            "CVA charge (bp)",
-            value=round(_cva_default, 2),
-            min_value=0.0,
-            step=0.25,
-            key="ha_cva_bp",
-            help=(
-                "Counterparty CVA as a running fixed-rate charge. "
-                "Recv-fixed: +bp to par; pay-fixed: −bp. "
-                "Auto-filled from PFE/CVA tab when you apply the charge."
-            ),
-        )
+        irs_spread_bp = st.number_input("Float spread (bp)", value=0.0, step=1.0, key="ha_irs_spd")
+
+    _cva_default = float(st.session_state.get("ha_cva_charge_bp", 0.0) or 0.0)
+    irs_cva_bp = st.number_input(
+        "CVA charge (bp)",
+        value=round(_cva_default, 2),
+        min_value=0.0,
+        step=0.25,
+        key="ha_cva_bp",
+        help=(
+            "Counterparty CVA as a running fixed-rate charge. "
+            "Recv-fixed: +bp to par; pay-fixed: −bp. "
+            "Auto-filled from PFE/CVA tab when you apply the charge."
+        ),
+    )
 
     price_irs_btn = st.button("Price IRS ticket", type="primary", use_container_width=True, key="ha_price_irs")
 
+    _curve_method = "zero DF" if getattr(curve, "_dfs", None) else "interp zeros"
     if price_irs_btn or st.session_state.get("ha_ticket") is None:
         _ticket = price_irs_ticket(
             curve,
@@ -2166,14 +2192,15 @@ with tab_ha:
             tenor_years=float(irs_tenor),
             pay_fixed=irs_side.startswith("Pay-fixed"),
             pay_freq=int(irs_freq),
+            float_pay_freq=int(irs_float_freq),
             fixed_rate_pct=None if solve_par else float(irs_fixed_pct),
             solve_par=bool(solve_par),
             float_spread_bp=float(irs_spread_bp),
             cva_charge_bp=float(irs_cva_bp),
+            curve_method=_curve_method,
         )
         st.session_state["ha_ticket"] = _ticket
         st.session_state["ha_cva_charge_bp"] = float(irs_cva_bp)
-        # Keep PFE tab notionals in sync (signed)
         _signed = float(irs_notional) if irs_side.startswith("Pay-fixed") else -float(irs_notional)
         st.session_state["pfe_signed_notionals"] = {float(irs_tenor): _signed}
 
@@ -2191,6 +2218,11 @@ with tab_ha:
               delta_color="normal")
     t5.metric("DV01", f"${ticket.dv01_k:+.1f}K/bp")
     t6.metric("CVA charge", f"{ticket.cva_charge_bp:.2f} bp")
+    st.caption(
+        f"Curve: **{_curve_method}** · fixed **{_freq_lab[int(irs_freq)]}** · "
+        f"float **{_freq_lab[int(irs_float_freq)]}**. "
+        "Par solved on bootstrapped discount factors (SOFR-style single curve)."
+    )
     st.dataframe(pd.DataFrame([ticket.summary_row]), use_container_width=True, hide_index=True)
     if ticket.cva_charge_bp:
         st.caption(
@@ -2230,9 +2262,9 @@ with tab_ha:
     else:
         h1, h2, h3, h4 = st.columns(4)
         with h1:
-            hi_name = st.text_input("Name", value="Manual fixed asset", key="ha_hi_name")
+            hi_name = st.text_input("Name", value="5Y bullet deposit", key="ha_hi_name")
         with h2:
-            hi_side = st.selectbox("Side", ["asset", "liability"], key="ha_hi_side")
+            hi_side = st.selectbox("Side", ["liability", "asset"], key="ha_hi_side")
         with h3:
             hi_type = st.selectbox(
                 "Type",
@@ -2247,7 +2279,14 @@ with tab_ha:
         with k2:
             hi_mat = st.number_input("Maturity (Y)", value=float(irs_tenor), min_value=0.1, step=0.5, key="ha_hi_mat")
         with k3:
-            hi_freq = st.selectbox("Pay freq", [1, 2, 4, 12], index=1, key="ha_hi_freq")
+            hi_freq = st.selectbox(
+                "Pay freq",
+                _freq_opts,
+                index=0,
+                key="ha_hi_freq",
+                format_func=lambda x: _freq_lab[x],
+                help="At maturity = principal + interest in one cashflow (no interim coupons).",
+            )
         with k4:
             hi_spd = st.number_input("Credit spread (bp)", value=0.0, step=5.0, key="ha_hi_spd")
         hi_rep = st.number_input(
@@ -2266,10 +2305,13 @@ with tab_ha:
             repricing_years=float(hi_rep) if hi_type == "bullet_floating" else None,
             credit_spread_bp=float(hi_spd),
         )
+        _n_dates = len({round(float(cf.time_years), 6) for cf in (_item.cashflows or [])})
         st.caption(
             f"Built **{_item.name}**: {_item.side} · {_item.instrument_type} · "
-            f"${_item.notional:,.1f}M · {_item.coupon_pct:.2f}% · {_item.maturity_years:g}Y"
+            f"${_item.notional:,.1f}M · {_item.coupon_pct:.2f}% · {_item.maturity_years:g}Y · "
+            f"{_freq_lab[int(hi_freq)]}"
             + (f" · spread {hi_spd:.0f} bp" if hi_spd else "")
+            + f" · **{_n_dates} payment date(s)**"
         )
 
     _itype = str(getattr(_item, "instrument_type", "") or "") if _item is not None else ""

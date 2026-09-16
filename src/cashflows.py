@@ -88,7 +88,8 @@ class Instrument:
     instrument_type : see InstrumentType
     maturity_years  : contractual maturity in years from today
     payment_freq    : coupon/principal payments per year
-                      (1=annual, 2=semi, 4=quarterly, 12=monthly)
+                      (0=at maturity / one CF date, 1=annual, 2=semi,
+                       4=quarterly, 12=monthly)
     repricing_years : for floating instruments — years to next rate reset
     side            : 'asset' or 'liability'
     prepay_enabled  : if True (amortising), apply CPR / SMM schedule
@@ -246,18 +247,25 @@ class Instrument:
     def _bullet_fixed(self) -> list[CashFlow]:
         """
         Fixed-rate bullet: coupon payments at each period + principal at maturity.
-        Coupon per period = notional × (coupon_pct/100) / payment_freq
+
+        ``payment_freq <= 0`` → **at maturity** only: one interest CF (simple
+        accrual coupon×T×N) and principal at T — no interim flows.
         """
         cfs = []
+        if int(self.payment_freq or 0) <= 0:
+            t = float(self.maturity_years)
+            interest = self.notional * (self.coupon_pct / 100.0) * t
+            cfs.append(CashFlow(t, interest, "coupon", years_to_bucket(t)))
+            cfs.append(CashFlow(t, self.notional, "principal", years_to_bucket(t)))
+            return cfs
+
         period = 1.0 / self.payment_freq
         coupon_amount = self.notional * (self.coupon_pct / 100) / self.payment_freq
         n_periods = round(self.maturity_years * self.payment_freq)
 
         for i in range(1, n_periods + 1):
             t = i * period
-            # coupon at every period
             cfs.append(CashFlow(t, coupon_amount, "coupon", years_to_bucket(t)))
-            # principal only at maturity
             if i == n_periods:
                 cfs.append(CashFlow(t, self.notional, "principal", years_to_bucket(t)))
 

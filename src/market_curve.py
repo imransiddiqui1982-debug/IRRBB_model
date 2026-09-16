@@ -247,16 +247,30 @@ def load_cached_snapshot() -> MarketCurveSnapshot | None:
 
 
 def get_live_yield_curve(use_cache_on_failure: bool = True) -> tuple[YieldCurve, MarketCurveSnapshot]:
-    """Fetch live market curve; fall back to cache then stylised curve."""
+    """Fetch live market curve, bootstrap to zeros/DFs; fall back to cache."""
+    from .sofr_bootstrap import bootstrap_from_market_snapshot
+
     try:
         snap = build_live_curve_snapshot()
-        return snap.to_yield_curve(), snap
+        zero = bootstrap_from_market_snapshot(snap, swap_freq=2)
+        snap.source_notes = list(snap.source_notes) + list(zero.notes)
+        snap.source_notes.append(f"Zero curve method: {zero.method}")
+        return zero.curve, snap
     except Exception as exc:
         if use_cache_on_failure:
             cached = load_cached_snapshot()
             if cached and cached.points:
-                cached.source_notes = list(cached.source_notes) + [
-                    f"Live fetch failed ({exc}); using cached curve"
-                ]
-                return cached.to_yield_curve(), cached
+                try:
+                    zero = bootstrap_from_market_snapshot(cached, swap_freq=2)
+                    cached.source_notes = list(cached.source_notes) + [
+                        f"Live fetch failed ({exc}); using cached quotes → zeros",
+                        *zero.notes,
+                        f"Zero curve method: {zero.method}",
+                    ]
+                    return zero.curve, cached
+                except Exception:
+                    cached.source_notes = list(cached.source_notes) + [
+                        f"Live fetch failed ({exc}); using cached curve (no bootstrap)"
+                    ]
+                    return cached.to_yield_curve(), cached
         raise

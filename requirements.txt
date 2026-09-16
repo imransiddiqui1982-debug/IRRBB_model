@@ -8,4 +8,7 @@ plotly>=5.18
 pytest>=7.4
 pytest-cov>=4.1
 flake8>=7.0
+# Optional rateslib (Streamlit Cloud). Local Application Control may block pandas/rateslib.
+rateslib>=1.5
 # cloud-rebuild: option-adjusted MBS 2026-09-07
+# cloud-rebuild: SOFR zero bootstrap + at-maturity IRS 2026-09-16

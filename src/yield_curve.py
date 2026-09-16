@@ -61,7 +61,7 @@ class YieldCurve:
 
     def rate(self, t: float | np.ndarray) -> float | np.ndarray:
         """
-        Continuously interpolated rate at tenor ``t`` (years).
+        Continuously interpolated annually compounded zero at tenor ``t`` (years).
 
         Prefers the continuous pillar grid so anchors like 10Y match scenario
         pillars exactly; falls back to bucket midpoints for KR01-cloned curves.
@@ -74,6 +74,37 @@ class YieldCurve:
         if np.ndim(t) == 0:
             return float(out)
         return out
+
+    def df(self, t: float | np.ndarray) -> float | np.ndarray:
+        """
+        Discount factor to tenor ``t``.
+
+        Uses log-linear interpolation on bootstrapped DF pillars when present;
+        otherwise DF = 1 / (1 + z(t))^t from the zero rate.
+        """
+        scalar = np.ndim(t) == 0
+        t_arr = np.atleast_1d(np.asarray(t, dtype=float))
+        out = np.empty(t_arr.shape, dtype=float)
+        df_tenors = getattr(self, "_df_tenors", None)
+        dfs = getattr(self, "_dfs", None)
+        if df_tenors and dfs and len(df_tenors) >= 2:
+            x = np.asarray(df_tenors, dtype=float)
+            log_df = np.log(np.maximum(np.asarray(dfs, dtype=float), 1e-18))
+            for i, ti in enumerate(t_arr):
+                ti = max(float(ti), 0.0)
+                if ti <= 1e-12:
+                    out[i] = 1.0
+                elif ti >= x[-1]:
+                    z = -log_df[-1] / max(x[-1], 1e-12)
+                    out[i] = float(np.exp(-z * ti))
+                else:
+                    out[i] = float(np.exp(np.interp(ti, x, log_df)))
+        else:
+            for i, ti in enumerate(t_arr):
+                ti = max(float(ti), 1e-8)
+                r = float(self.rate(ti))
+                out[i] = 1.0 / (1.0 + r) ** ti
+        return float(out[0]) if scalar else out
 
     def shocked_rates(self, shocks_bp: list[float]) -> np.ndarray:
         """
@@ -94,6 +125,7 @@ class YieldCurve:
     def shocked_curve(self, shocks_bp: list[float]) -> "YieldCurve":
         """
         Full shocked curve: continuous pillars + bucket rates, floored at 0.
+        Re-derives DF pillars from shocked annually compounded zeros.
         """
         shocks = np.asarray(shocks_bp, dtype=float)
         pillar_shocks = np.interp(
@@ -105,7 +137,16 @@ class YieldCurve:
             np.asarray(self._ref_rates, dtype=float) + pillar_shocks / 10_000.0,
             0.0,
         )
-        return YieldCurve(list(self._ref_tenors), list(new_ref))
+        out = YieldCurve(list(self._ref_tenors), list(new_ref))
+        # Rebuild DF from shocked zeros (annually compounded)
+        tenors = list(out._ref_tenors)
+        dfs = [
+            1.0 if t < 1e-12 else float(1.0 / (1.0 + z) ** t)
+            for t, z in zip(tenors, out._ref_rates)
+        ]
+        out._df_tenors = tenors
+        out._dfs = dfs
+        return out
 
     def discount_factors(self, rates: np.ndarray) -> np.ndarray:
         """
