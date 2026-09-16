@@ -210,6 +210,7 @@ def fetch_usd_curve_points() -> tuple[dict[str, float], list[str]]:
     """Reuse live USD SOFR+IRS mid curve as tenor→rate map."""
     notes: list[str] = []
     try:
+        from ..market_curve import get_live_yield_curve
         curve, snap = get_live_yield_curve(use_cache_on_failure=True)
         _ = curve
         out: dict[str, float] = {}
