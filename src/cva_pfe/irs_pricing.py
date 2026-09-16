@@ -25,6 +25,8 @@ class IRSTrade:
     fixed_rate: float | None = None  # None → price at par (MtM ≈ 0)
     start_years: float = 0.0
     name: str = ""
+    pay_freq: int = 1  # payments per year (1,2,4,12)
+    float_spread_bp: float = 0.0
 
     @property
     def signed_notional_m(self) -> float:
@@ -35,7 +37,8 @@ class IRSTrade:
         if self.name:
             return self.name
         side = "Pay-fixed" if self.pay_fixed else "Receive-fixed"
-        return f"{side} {self.tenor_years:g}Y"
+        freq = max(int(self.pay_freq or 1), 1)
+        return f"{side} {self.tenor_years:g}Y {freq}x"
 
 
 def discount_factor(curve: YieldCurve, t: float) -> float:

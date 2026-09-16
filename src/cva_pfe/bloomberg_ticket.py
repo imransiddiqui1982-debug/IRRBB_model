@@ -138,6 +138,8 @@ def price_irs_ticket(
             f"{'Pay' if pay_fixed else 'Recv'}-fixed {tenor_years:g}Y "
             f"{pay_freq}x"
         ),
+        pay_freq=int(pay_freq),
+        float_spread_bp=float(float_spread_bp),
     )
     # DV01 via existing annual proxy trade (close enough for ticket screen)
     dv = swap_dv01_k(curve, trade)

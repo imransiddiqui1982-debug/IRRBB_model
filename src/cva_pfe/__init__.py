@@ -14,14 +14,6 @@ from .bloomberg_ticket import (
 )
 from .cva import CVAResult, compute_cva, hazard_from_cds
 from .exposure import ExposureProfile, simulate_exposure
-from .hedge_effectiveness import (
-    EffectivenessResult,
-    default_shock_grid_bp,
-    effectiveness_scatter_frame,
-    eligible_hedged_items,
-    progressive_frame,
-    prospective_effectiveness,
-)
 from .irs_pricing import (
     IRSTrade,
     par_swap_rate,
@@ -33,6 +25,7 @@ from .saccr import SACCRResult, saccr_irs_portfolio
 
 if TYPE_CHECKING:
     from .engine import HedgeCCRReport
+    from .hedge_effectiveness import EffectivenessResult
 
 __all__ = [
     "IRSTrade",
@@ -53,6 +46,7 @@ __all__ = [
     "saccr_frame",
     "EffectivenessResult",
     "prospective_effectiveness",
+    "build_hypothetical_derivative",
     "eligible_hedged_items",
     "effectiveness_scatter_frame",
     "progressive_frame",
@@ -65,9 +59,28 @@ __all__ = [
     "trades_from_tickets",
 ]
 
+_HE_NAMES = {
+    "EffectivenessResult",
+    "prospective_effectiveness",
+    "build_hypothetical_derivative",
+    "eligible_hedged_items",
+    "effectiveness_scatter_frame",
+    "progressive_frame",
+    "default_shock_grid_bp",
+}
+_ENGINE_NAMES = {
+    "HedgeCCRReport",
+    "run_hedge_ccr",
+    "exposure_frame",
+    "saccr_frame",
+}
+
 
 def __getattr__(name: str):
-    if name in ("HedgeCCRReport", "run_hedge_ccr", "exposure_frame", "saccr_frame"):
+    if name in _ENGINE_NAMES:
         from . import engine as m
+        return getattr(m, name)
+    if name in _HE_NAMES:
+        from . import hedge_effectiveness as m
         return getattr(m, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

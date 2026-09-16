@@ -126,3 +126,80 @@ def test_progressive_expands_sample():
     assert ns == sorted(ns)
     assert ns[0] == 2
     assert ns[-1] == 4
+
+
+def test_cash_flow_hd_floating_asset_vs_receive_fixed_passes():
+    """Matched receive-fixed IRS vs floating asset → CF HD effectiveness PASS."""
+    from src.cashflows import Instrument
+    from src.cva_pfe.bloomberg_ticket import par_swap_rate_freq
+    from src.cva_pfe.hedge_effectiveness import (
+        build_hypothetical_derivative,
+        prospective_effectiveness,
+    )
+    from src.cva_pfe.irs_pricing import IRSTrade
+
+    curve = YieldCurve()
+    floater = Instrument(
+        name="FRN 5Y",
+        notional=100.0,
+        coupon_pct=0.0,
+        instrument_type="bullet_floating",
+        maturity_years=5.0,
+        payment_freq=2,
+        repricing_years=0.25,
+        side="asset",
+    )
+    floater.generate_cashflows()
+    freq = 2
+    k = par_swap_rate_freq(curve, 5.0, freq)
+    hedge = IRSTrade(
+        tenor_years=5.0,
+        notional_m=100.0,
+        pay_fixed=False,
+        fixed_rate=k,
+        pay_freq=freq,
+    )
+    hd = build_hypothetical_derivative(curve, floater)
+    assert hd.pay_fixed is False
+    assert hd.pay_freq == freq
+    assert abs(hd.notional_m - 100.0) < 1e-9
+
+    res = prospective_effectiveness(
+        curve, floater, [hedge], designation="cash_flow",
+    )
+    assert res.method == "cash_flow_hypothetical_derivative"
+    assert res.critical_terms.get("match") is True
+    assert res.r_squared >= 0.99
+    assert 0.95 <= res.slope <= 1.05
+    assert res.overall_pass
+
+
+def test_cash_flow_hd_side_mismatch_fails_critical_terms():
+    from src.cashflows import Instrument
+    from src.cva_pfe.bloomberg_ticket import par_swap_rate_freq
+    from src.cva_pfe.hedge_effectiveness import prospective_effectiveness
+    from src.cva_pfe.irs_pricing import IRSTrade
+
+    curve = YieldCurve()
+    floater = Instrument(
+        name="FRN 5Y",
+        notional=100.0,
+        coupon_pct=0.0,
+        instrument_type="bullet_floating",
+        maturity_years=5.0,
+        payment_freq=2,
+        repricing_years=0.25,
+        side="asset",
+    )
+    floater.generate_cashflows()
+    k = par_swap_rate_freq(curve, 5.0, 2)
+    # Wrong side: pay-fixed vs floating asset
+    hedge = IRSTrade(
+        tenor_years=5.0, notional_m=100.0, pay_fixed=True, fixed_rate=k, pay_freq=2,
+    )
+    res = prospective_effectiveness(
+        curve, floater, [hedge], designation="cash_flow",
+    )
+    assert res.critical_terms.get("match") is False
+    # Opposite DV01 → negative slope / fail band
+    assert res.slope < 0.0 or not res.overall_pass

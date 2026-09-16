@@ -2081,7 +2081,8 @@ with tab_ha:
     st.caption(
         "Bloomberg SWPM-style workflow: enter IRS terms (solve par so NPV≈0), "
         "enter the hedged-item ticket, then run prospective / progressive effectiveness. "
-        "PFE / CVA live on the **PFE / CVA** tab. Prototype — not accounting advice."
+        "**Fair value** = ΔHedge vs −ΔItem PV; **cash flow** = hypothetical-derivative (HD) method "
+        "for floating items. PFE / CVA live on the **PFE / CVA** tab. Prototype — not accounting advice."
     )
 
     from src.cva_pfe import (
@@ -2244,11 +2245,40 @@ with tab_ha:
             + (f" · spread {hi_spd:.0f} bp" if hi_spd else "")
         )
 
-    ha_desig = st.selectbox("Designation", ["fair_value", "cash_flow"], key="ha_desig2")
+    _itype = str(getattr(_item, "instrument_type", "") or "") if _item is not None else ""
+    _suggest_cf = _itype == "bullet_floating"
+    _desig_opts = ["fair_value", "cash_flow"]
+    _desig_labels = {
+        "fair_value": "Fair value (ΔHedge vs −ΔItem PV)",
+        "cash_flow": "Cash flow (hypothetical derivative)",
+    }
+    _desig_ix = 1 if _suggest_cf else 0
+    ha_desig = st.selectbox(
+        "Designation",
+        _desig_opts,
+        index=_desig_ix,
+        format_func=lambda x: _desig_labels[x],
+        key="ha_desig2",
+        help=(
+            "Fair value: pay-fixed vs fixed-rate asset. "
+            "Cash flow / HD: receive-fixed vs floating asset (or pay-fixed vs floating liability)."
+        ),
+    )
+    if ha_desig == "cash_flow":
+        st.info(
+            "Cash-flow hedge uses the **hypothetical-derivative (HD)** method: "
+            "build a perfect-match IRS for the item, then regress ΔActualHedge on ΔHD. "
+            "Match notional, tenor, pay frequency, and side for a PASS."
+        )
+    elif _suggest_cf:
+        st.warning(
+            "Floating items have near-zero PV duration — **cash_flow** designation is usually required."
+        )
+
     r2_min = st.number_input("R² minimum", value=0.80, min_value=0.5, max_value=0.99, step=0.05, key="ha_r2")
     layer_m = st.number_input(
         "Layer notional ($M)", value=0.0, min_value=0.0, step=10.0, key="ha_layer",
-        help="0 = full instrument. Else scale ΔItem (portfolio layer).",
+        help="0 = full instrument. Else scale ΔItem / HD notional (portfolio layer).",
     )
 
     if _desig is not None and not _desig.empty:
@@ -2282,8 +2312,10 @@ with tab_ha:
     if ha_res is not None:
         status = "PASS" if ha_res.overall_pass else "FAIL"
         color = GREEN if ha_res.overall_pass else RED
+        _is_cf = ha_res.method == "cash_flow_hypothetical_derivative"
         st.markdown(
             f"**Effectiveness: <span style='color:{color}'>{status}</span>** — "
+            f"{'CF / HD' if _is_cf else 'FV'} · "
             f"R²={ha_res.r_squared:.3f} (min {ha_res.r2_min:.2f}) · "
             f"slope={ha_res.slope:.3f} (band {ha_res.slope_lo:.2f}–{ha_res.slope_hi:.2f}) · "
             f"dollar offset≈{ha_res.dollar_offset_mean:.3f}",
@@ -2298,19 +2330,53 @@ with tab_ha:
                   delta_color="normal" if ha_res.pass_slope else "inverse")
         e3.metric("Intercept a", f"{ha_res.intercept:.4f}")
         e4.metric("Obs", str(ha_res.n_obs))
-        st.caption(
-            f"Regression: ΔHedge = a + b·(−ΔItem) · hedged item **{ha_res.hedged_item}** · "
-            f"hedge **{ha_res.hedge_label}** · `{ha_res.designation}`. Not accounting advice."
-        )
+        if _is_cf:
+            st.caption(
+                f"Regression: ΔActualHedge = a + b·ΔHD · hedged item **{ha_res.hedged_item}** · "
+                f"hedge **{ha_res.hedge_label}** · `{ha_res.designation}`. Not accounting advice."
+            )
+        else:
+            st.caption(
+                f"Regression: ΔHedge = a + b·(−ΔItem PV) · hedged item **{ha_res.hedged_item}** · "
+                f"hedge **{ha_res.hedge_label}** · `{ha_res.designation}`. Not accounting advice."
+            )
+        if getattr(ha_res, "method_note", ""):
+            st.caption(ha_res.method_note)
+        _ct = getattr(ha_res, "critical_terms", None) or {}
+        if _ct:
+            _ct_ok = bool(_ct.get("match"))
+            st.markdown(
+                f"**Critical terms:** "
+                f"<span style='color:{GREEN if _ct_ok else RED}'>"
+                f"{'MATCH' if _ct_ok else 'MISMATCH'}</span> — {_ct.get('notes', '')}",
+                unsafe_allow_html=True,
+            )
+            st.dataframe(pd.DataFrame([{
+                "Hedge side": _ct.get("hedge_side"),
+                "HD side": _ct.get("hd_side"),
+                "Hedge notional": _ct.get("hedge_notional"),
+                "HD notional": _ct.get("hd_notional"),
+                "Hedge tenor": _ct.get("hedge_tenor"),
+                "HD tenor": _ct.get("hd_tenor"),
+                "Hedge freq": _ct.get("hedge_freq"),
+                "HD freq": _ct.get("hd_freq"),
+            }]), use_container_width=True, hide_index=True)
+
         sc = effectiveness_scatter_frame(ha_res)
+        if _is_cf:
+            x_col, y_col = "ΔHD ($M)", "ΔActual hedge ($M)"
+            x_title, y_title = "Δ Hypothetical derivative ($M)", "Δ Actual hedge ($M)"
+        else:
+            x_col, y_col = "−ΔItem PV ($M)", "ΔHedge ($M)"
+            x_title, y_title = "−Δ Hedged item PV ($M)", "Δ Hedging instrument ($M)"
         fig_ha = go.Figure()
         fig_ha.add_trace(go.Scatter(
-            x=sc["−ΔItem ($M)"], y=sc["ΔHedge ($M)"],
+            x=sc[x_col], y=sc[y_col],
             mode="markers+text", text=[f"{s:.0f}bp" for s in ha_res.shocks_bp],
             textposition="top center",
             marker=dict(size=10, color=ORANGE), name="Shock scenarios",
         ))
-        xs = np.array([float(sc["−ΔItem ($M)"].min()), float(sc["−ΔItem ($M)"].max())], dtype=float)
+        xs = np.array([float(sc[x_col].min()), float(sc[x_col].max())], dtype=float)
         if abs(xs[1] - xs[0]) < 1e-12:
             xs = np.array([-1.0, 1.0])
         fig_ha.add_trace(go.Scatter(
@@ -2323,8 +2389,8 @@ with tab_ha:
         ))
         fig_ha.update_layout(
             **PLOTLY_BASE, height=360,
-            xaxis=dict(**AXIS_STYLE, title="−Δ Hedged item ($M)"),
-            yaxis=dict(**AXIS_STYLE, title="Δ Hedging instrument ($M)"),
+            xaxis=dict(**AXIS_STYLE, title=x_title),
+            yaxis=dict(**AXIS_STYLE, title=y_title),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, bgcolor=BG2),
         )
         st.plotly_chart(fig_ha, use_container_width=True)
