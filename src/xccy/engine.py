@@ -72,15 +72,34 @@ def _rateslib_available() -> bool:
         return False
 
 
-def _rl_nodes(curve: dict[str, float], effective, dt_ctor) -> dict:
+def _rl_nodes(curve: dict[str, float], effective) -> dict:
+    """Build rateslib Curve nodes: effective date → DF pillars.
+
+    ``rateslib.dt`` is a plain ``datetime.datetime`` (no ``.add``); advance with
+    ``timedelta`` or ``add_tenor`` when available.
+    """
+    try:
+        from rateslib import add_tenor
+    except Exception:
+        add_tenor = None
+
     nodes = {effective: 1.0}
     for lab, rate in curve.items():
-        t = 0.0 if lab.upper() == "ON" else tenor_to_years(lab)
+        t = 0.0 if str(lab).upper() in ("ON", "O/N") else tenor_to_years(lab)
         if t <= 1e-12:
             continue
         z = float(rate)
         df = 1.0 / ((1.0 + z) ** t) if t >= 1.0 else 1.0 / (1.0 + z * max(t, 1e-8))
-        d = effective.add(days=int(round(t * 365.25)))
+        label = str(lab).upper()
+        if add_tenor is not None and label not in ("ON", "O/N") and (
+            label.endswith("Y") or label.endswith("M") or label.endswith("W")
+        ):
+            try:
+                d = add_tenor(effective, label, "MF", "nyc")
+            except Exception:
+                d = effective + timedelta(days=int(round(t * 365.25)))
+        else:
+            d = effective + timedelta(days=int(round(t * 365.25)))
         nodes[d] = float(max(df, 1e-8))
     return nodes
 
@@ -102,17 +121,17 @@ def price_xccy_rateslib(
     basis = dict(basis_override_bp or snap.xccy_basis_bp)
 
     sofr = Curve(
-        nodes=_rl_nodes(snap.usd_curve, effective, dt),
+        nodes=_rl_nodes(snap.usd_curve, effective),
         id="sofr",
         convention=dc,
     )
     estr = Curve(
-        nodes=_rl_nodes(snap.eur_curve, effective, dt),
+        nodes=_rl_nodes(snap.eur_curve, effective),
         id="estr",
         convention=dc,
     )
     eurusd = Curve(
-        nodes=_rl_nodes(snap.eur_curve, effective, dt),
+        nodes=_rl_nodes(snap.eur_curve, effective),
         id="eurusd",
         convention=dc,
     )
