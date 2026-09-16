@@ -4,6 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .bloomberg_ticket import (
+    IRSTicketResult,
+    build_manual_hedged_item,
+    par_swap_rate_freq,
+    price_irs_ticket,
+    swap_mtm_freq_m,
+    trades_from_tickets,
+)
 from .cva import CVAResult, compute_cva, hazard_from_cds
 from .exposure import ExposureProfile, simulate_exposure
 from .hedge_effectiveness import (
@@ -49,6 +57,12 @@ __all__ = [
     "effectiveness_scatter_frame",
     "progressive_frame",
     "default_shock_grid_bp",
+    "IRSTicketResult",
+    "price_irs_ticket",
+    "build_manual_hedged_item",
+    "par_swap_rate_freq",
+    "swap_mtm_freq_m",
+    "trades_from_tickets",
 ]
 
 

@@ -358,19 +358,16 @@ The **Hedge & CCR** tab prices the 2Y/5Y/10Y ALCO IRS ladder on the active curve
 
 Economic PFE ≠ SA-CCR PFE. Designation hints reuse the KR01 playbook (indicative only).
 
-### Hedge accounting — prospective / progressive test
-On **Hedge & CCR**, pick a **hedged item** and the IRS ladder as the **hedging instrument**:
+## Hedge Accounting (Bloomberg-style tickets)
 
-1. Reprice both under a grid of parallel curve shocks (±25…±200 bp).
-2. Regress **ΔHedge = a + b · (−ΔItem)** (fair-value offset form).
-3. **Pass** if R² ≥ threshold (default 0.80) and slope ∈ [0.80, 1.25].
-4. **Progressive** table recomputes R²/slope as the shock sample expands (small shocks → full grid).
+The **Hedge Accounting** tab:
 
-**Designation pairings (indicative):**
-| IRS | Primary | Alternate |
-|-----|---------|-----------|
-| Pay-fixed / receive-float | FV of fixed-rate **asset** | CF of floating **liability** |
-| Receive-fixed / pay-float | CF of floating-rate **asset** | FV of fixed-rate **liability** |
+1. Enter an **IRS ticket** (notional, side, tenor, pay frequency, float spread).
+2. **Solve par** sets the fixed rate so **NPV ≈ 0** at inception (SWPM-style).
+3. Enter the **hedged item** from the balance sheet or as a **manual ticket** (amount, coupon, maturity, type, spread).
+4. Run **prospective / progressive effectiveness** (R² / slope).
 
-Optional **layer notional** scales ΔItem for portfolio-layer style designations. Prototype only — not auditor-ready ASC 815 documentation.
+## PFE / CVA (separate tab)
+
+Counterparty EE/PFE, CVA, SA-CCR EAD and internal PFE/EAD limits live on the **PFE / CVA** tab (not mixed with hedge accounting).
 """

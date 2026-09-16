@@ -855,7 +855,7 @@ st.divider()
 # ══════════════════════════════════════════════════════════════════════════════
 
 (
-    tab_in, tab0, tab_lcr, tab1, tab2, tab3, tab4, tab5, tab_kr, tab_ccr, tab6, tab_docs,
+    tab_in, tab0, tab_lcr, tab1, tab2, tab3, tab4, tab5, tab_kr, tab_ha, tab_pfe, tab6, tab_docs,
 ) = st.tabs([
     "Inputs",
     "NMD Refinement",
@@ -866,7 +866,8 @@ st.divider()
     "Scenario Comparison",
     "Repricing Gap",
     "ALCO / KR01 / Hedges",
-    "Hedge & CCR",
+    "Hedge Accounting",
+    "PFE / CVA",
     "Yield Curve",
     "Docs",
 ])
@@ -2071,27 +2072,26 @@ with tab_kr:
             )
 
 
-# ── TAB: Hedge & CCR (IRS pricing, EE/PFE, CVA, SA-CCR) ───────────────────────
-with tab_ccr:
+# ── TAB: Hedge Accounting (Bloomberg-style tickets + effectiveness) ───────────
+with tab_ha:
     st.markdown(
-        "<p class='section-label'>Hedge & CCR — IRS pricing · EE/PFE · CVA · SA-CCR</p>",
+        "<p class='section-label'>Hedge Accounting — IRS ticket · hedged item · effectiveness</p>",
         unsafe_allow_html=True,
     )
     st.caption(
-        "Prices the ALCO hedge ladder as vanilla SOFR-style IRS on the active curve, "
-        "then runs economic Monte Carlo EE/PFE + unilateral CVA and Basel SA-CCR EAD. "
-        "Prototype — not a validated XVA engine."
+        "Bloomberg SWPM-style workflow: enter IRS terms (solve par so NPV≈0), "
+        "enter the hedged-item ticket, then run prospective / progressive effectiveness. "
+        "PFE / CVA live on the **PFE / CVA** tab. Prototype — not accounting advice."
     )
 
     from src.cva_pfe import (
+        build_manual_hedged_item,
         effectiveness_scatter_frame,
         eligible_hedged_items,
-        exposure_frame,
+        price_irs_ticket,
         progressive_frame,
         prospective_effectiveness,
-        run_hedge_ccr,
-        saccr_frame,
-        trades_from_signed_notionals,
+        trades_from_tickets,
     )
     from src.key_rate_duration import (
         designate_key_rate_hedges,
@@ -2099,56 +2099,86 @@ with tab_ccr:
         suggest_key_rate_hedges,
     )
 
-    with st.spinner("KR01 hedge sizes for CCR…"):
-        _kr_ccr = calc.key_rate_duration_gap()
+    with st.spinner("KR01 defaults…"):
+        _kr_ha = calc.key_rate_duration_gap()
         _raw_hr = st.session_state.get("kr_hedge_ratio", 80)
         _hr = float(_raw_hr) / 100.0 if float(_raw_hr) > 1.5 else float(_raw_hr)
-        _ladder = proposed_swap_notionals(_kr_ccr, hedge_ratio=_hr)
+        _ladder = proposed_swap_notionals(_kr_ha, hedge_ratio=_hr)
 
-    d2 = float(st.session_state.get("hedge_n_2y", _ladder.get(2.0, 0.0)))
-    d5 = float(st.session_state.get("hedge_n_5y", _ladder.get(5.0, 0.0)))
-    d10 = float(st.session_state.get("hedge_n_10y", _ladder.get(10.0, 0.0)))
+    # ── IRS ticket (hedging instrument) ───────────────────────────────────────
+    st.markdown("<p class='section-label'>1 · IRS ticket (hedging instrument)</p>",
+                unsafe_allow_html=True)
+    _def_n = abs(float(_ladder.get(5.0, 100.0))) or 100.0
+    _def_pay = float(_ladder.get(5.0, 100.0)) >= 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        n2c = st.number_input(
-            "2Y signed $M", value=round(d2, 1), step=5.0, key="ccr_n_2y",
-            help="Positive = pay-fixed (same sign as ALCO playbook).",
+    i1, i2, i3, i4 = st.columns(4)
+    with i1:
+        irs_notional = st.number_input(
+            "IRS notional ($M)", value=round(_def_n, 1), min_value=0.0, step=5.0, key="ha_irs_n",
         )
-    with c2:
-        n5c = st.number_input("5Y signed $M", value=round(d5, 1), step=5.0, key="ccr_n_5y")
-    with c3:
-        n10c = st.number_input("10Y signed $M", value=round(d10, 1), step=5.0, key="ccr_n_10y")
-    with c4:
-        run_ccr = st.button("Run pricing & CCR", type="primary", use_container_width=True)
+    with i2:
+        irs_side = st.selectbox(
+            "Side",
+            ["Pay-fixed / receive-float", "Receive-fixed / pay-float"],
+            index=0 if _def_pay else 1,
+            key="ha_irs_side",
+        )
+    with i3:
+        irs_tenor = st.selectbox("Tenor (Y)", [1.0, 2.0, 3.0, 5.0, 7.0, 10.0], index=3, key="ha_irs_tenor")
+    with i4:
+        irs_freq = st.selectbox("Pay frequency", [1, 2, 4, 12], index=1, key="ha_irs_freq",
+                                format_func=lambda x: {1: "Annual", 2: "Semi", 4: "Quarterly", 12: "Monthly"}[x])
 
-    x1, x2, x3, x4 = st.columns(4)
-    with x1:
-        cds_bp = st.number_input("Counterparty CDS (bp)", value=100.0, min_value=1.0, step=5.0)
-    with x2:
-        recovery = st.number_input("Recovery", value=0.40, min_value=0.0, max_value=0.9, step=0.05)
-    with x3:
-        rate_vol = st.number_input("Rate vol (bp / √y)", value=80.0, min_value=10.0, step=5.0)
-    with x4:
-        collat = st.number_input("Collateral CSA ($M)", value=0.0, step=1.0,
-                                 help="Unmargined if 0. Simple RC = max(V−C, 0).")
+    j1, j2, j3, j4 = st.columns(4)
+    with j1:
+        solve_par = st.checkbox("Solve par (NPV ≈ 0)", value=True, key="ha_solve_par",
+                                help="Like Bloomberg SWPM: set fixed rate = par so MtM≈0 at inception.")
+    with j2:
+        irs_fixed_pct = st.number_input(
+            "Fixed rate % (manual)", value=0.0, step=0.01, format="%.4f",
+            disabled=solve_par, key="ha_irs_fixed",
+            help="Ignored when Solve par is on.",
+        )
+    with j3:
+        irs_spread_bp = st.number_input("Float spread (bp)", value=0.0, step=1.0, key="ha_irs_spd")
+    with j4:
+        price_irs_btn = st.button("Price IRS ticket", type="primary", use_container_width=True, key="ha_price_irs")
 
-    y1, y2 = st.columns(2)
-    with y1:
-        n_paths = st.slider("MC paths", 100, 1000, 400, 100)
-    with y2:
-        pfe_pct = st.slider("PFE percentile", 90, 99, 95, 1)
+    if price_irs_btn or st.session_state.get("ha_ticket") is None:
+        _ticket = price_irs_ticket(
+            curve,
+            notional_m=float(irs_notional),
+            tenor_years=float(irs_tenor),
+            pay_fixed=irs_side.startswith("Pay-fixed"),
+            pay_freq=int(irs_freq),
+            fixed_rate_pct=None if solve_par else float(irs_fixed_pct),
+            solve_par=bool(solve_par),
+            float_spread_bp=float(irs_spread_bp),
+        )
+        st.session_state["ha_ticket"] = _ticket
+        # Keep PFE tab notionals in sync (signed)
+        _signed = float(irs_notional) if irs_side.startswith("Pay-fixed") else -float(irs_notional)
+        st.session_state["pfe_signed_notionals"] = {float(irs_tenor): _signed}
 
-    notionals_ccr = {2.0: float(n2c), 5.0: float(n5c), 10.0: float(n10c)}
+    ticket = st.session_state["ha_ticket"]
+    t1, t2, t3, t4, t5 = st.columns(5)
+    t1.metric("Par rate", f"{ticket.par_rate * 100:.4f}%")
+    t2.metric("Fixed used", f"{ticket.fixed_rate_used * 100:.4f}%")
+    t3.metric("NPV / MtM", f"${ticket.mtm_m:+.6f}M",
+              delta="at par" if ticket.npv_is_par else "off-market",
+              delta_color="normal" if ticket.npv_is_par else "off")
+    t4.metric("DV01", f"${ticket.dv01_k:+.1f}K/bp")
+    t5.metric("At par", "Yes" if ticket.npv_is_par else "No")
+    st.dataframe(pd.DataFrame([ticket.summary_row]), use_container_width=True, hide_index=True)
 
-    # ── Hedge accounting: designation + prospective / progressive test ────────
-    st.markdown("<p class='section-label'>Hedge accounting — prospective / progressive test</p>",
+    # ── Hedged item ticket ────────────────────────────────────────────────────
+    st.markdown("<p class='section-label'>2 · Hedged-item ticket</p>",
                 unsafe_allow_html=True)
     _elig = eligible_hedged_items(assets, liabilities)
-    _elig_names = [i.name for i in _elig] or ["(none)"]
-    _hedge_sug = suggest_key_rate_hedges(_kr_ccr, hedge_ratio=_hr)
+    _elig_names = ["(manual entry)"] + [i.name for i in _elig]
+    _hedge_sug = suggest_key_rate_hedges(_kr_ha, hedge_ratio=_hr)
     _desig = designate_key_rate_hedges(_hedge_sug, assets, liabilities)
-    _default_item = None
+    _default_item = "(manual entry)"
     if _desig is not None and not _desig.empty:
         for nm in _desig["Hedged item"]:
             if nm in _elig_names:
@@ -2156,47 +2186,86 @@ with tab_ccr:
                 break
     _ix = _elig_names.index(_default_item) if _default_item in _elig_names else 0
 
-    ha1, ha2, ha3, ha4 = st.columns(4)
-    with ha1:
-        hedged_name = st.selectbox(
-            "Hedged item",
-            _elig_names,
-            index=min(_ix, len(_elig_names) - 1),
-            key="ha_hedged_item",
-            help="Balance-sheet instrument designated in the hedge relationship.",
+    src = st.radio(
+        "Hedged-item source",
+        ["From balance sheet", "Manual ticket"],
+        horizontal=True,
+        key="ha_item_src",
+        index=0 if _default_item != "(manual entry)" else 1,
+    )
+
+    if src == "From balance sheet":
+        _bs_names = [n for n in _elig_names if n != "(manual entry)"] or ["(none)"]
+        _bs_ix = _bs_names.index(_default_item) if _default_item in _bs_names else 0
+        hedged_name = st.selectbox("Balance-sheet instrument", _bs_names, index=min(_bs_ix, len(_bs_names) - 1), key="ha_bs_item")
+        _item = next((i for i in _elig if i.name == hedged_name), None)
+    else:
+        h1, h2, h3, h4 = st.columns(4)
+        with h1:
+            hi_name = st.text_input("Name", value="Manual fixed asset", key="ha_hi_name")
+        with h2:
+            hi_side = st.selectbox("Side", ["asset", "liability"], key="ha_hi_side")
+        with h3:
+            hi_type = st.selectbox(
+                "Type",
+                ["bullet_fixed", "bullet_floating", "amortising"],
+                key="ha_hi_type",
+            )
+        with h4:
+            hi_n = st.number_input("Notional ($M)", value=round(_def_n, 1), min_value=0.1, step=5.0, key="ha_hi_n")
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            hi_cpn = st.number_input("Coupon / rate %", value=4.50, step=0.05, key="ha_hi_cpn")
+        with k2:
+            hi_mat = st.number_input("Maturity (Y)", value=float(irs_tenor), min_value=0.1, step=0.5, key="ha_hi_mat")
+        with k3:
+            hi_freq = st.selectbox("Pay freq", [1, 2, 4, 12], index=1, key="ha_hi_freq")
+        with k4:
+            hi_spd = st.number_input("Credit spread (bp)", value=0.0, step=5.0, key="ha_hi_spd")
+        hi_rep = st.number_input(
+            "Repricing (Y) — floaters",
+            value=0.25, min_value=0.01, step=0.05, key="ha_hi_rep",
+            disabled=hi_type != "bullet_floating",
         )
-    with ha2:
-        ha_desig = st.selectbox(
-            "Designation",
-            ["fair_value", "cash_flow"],
-            index=0,
-            key="ha_desig",
+        _item = build_manual_hedged_item(
+            name=hi_name,
+            notional_m=float(hi_n),
+            coupon_pct=float(hi_cpn),
+            maturity_years=float(hi_mat),
+            side=hi_side,
+            instrument_type=hi_type,
+            payment_freq=int(hi_freq),
+            repricing_years=float(hi_rep) if hi_type == "bullet_floating" else None,
+            credit_spread_bp=float(hi_spd),
         )
-    with ha3:
-        r2_min = st.number_input("R² minimum", value=0.80, min_value=0.5, max_value=0.99, step=0.05)
-    with ha4:
-        layer_m = st.number_input(
-            "Layer notional ($M)",
-            value=0.0, min_value=0.0, step=10.0,
-            help="0 = full instrument. Else scale ΔItem (portfolio layer).",
+        st.caption(
+            f"Built **{_item.name}**: {_item.side} · {_item.instrument_type} · "
+            f"${_item.notional:,.1f}M · {_item.coupon_pct:.2f}% · {_item.maturity_years:g}Y"
+            + (f" · spread {hi_spd:.0f} bp" if hi_spd else "")
         )
 
+    ha_desig = st.selectbox("Designation", ["fair_value", "cash_flow"], key="ha_desig2")
+    r2_min = st.number_input("R² minimum", value=0.80, min_value=0.5, max_value=0.99, step=0.05, key="ha_r2")
+    layer_m = st.number_input(
+        "Layer notional ($M)", value=0.0, min_value=0.0, step=10.0, key="ha_layer",
+        help="0 = full instrument. Else scale ΔItem (portfolio layer).",
+    )
+
     if _desig is not None and not _desig.empty:
-        with st.expander("Designation hints (ASC 815 / ASU 2017-12 — indicative)"):
+        with st.expander("KR01 designation hints (indicative)"):
             st.caption(
                 "Pay-fixed → FV of **fixed asset** (alt: CF of floating liability). "
                 "Receive-fixed / pay-float → CF of **floating asset** "
-                "(pay-float offsets asset float; alt: FV of fixed liability)."
+                "(alt: FV of fixed liability)."
             )
             st.dataframe(_desig, use_container_width=True, hide_index=True)
 
-    run_ha = st.button("Run prospective effectiveness", use_container_width=True)
+    run_ha = st.button("Run prospective effectiveness", type="primary", use_container_width=True, key="ha_run_eff")
 
-    if run_ha and hedged_name != "(none)":
-        _item = next((i for i in _elig if i.name == hedged_name), None)
-        _trades = trades_from_signed_notionals(notionals_ccr, curve, use_par=True)
-        if _item is None or not _trades:
-            st.warning("Need a hedged item and non-zero IRS notionals.")
+    if run_ha:
+        _trades = trades_from_tickets([ticket])
+        if _item is None or not _trades or float(irs_notional) <= 0:
+            st.warning("Need a priced IRS ticket (notional > 0) and a hedged item.")
         else:
             with st.spinner("Prospective / progressive effectiveness…"):
                 ha_res = prospective_effectiveness(
@@ -2222,28 +2291,24 @@ with tab_ccr:
         )
         e1, e2, e3, e4 = st.columns(4)
         e1.metric("R²", f"{ha_res.r_squared:.3f}",
-                  delta="ok" if ha_res.pass_r2 else "below min", delta_color="normal" if ha_res.pass_r2 else "inverse")
+                  delta="ok" if ha_res.pass_r2 else "below min",
+                  delta_color="normal" if ha_res.pass_r2 else "inverse")
         e2.metric("Slope b", f"{ha_res.slope:.3f}",
                   delta="ok" if ha_res.pass_slope else "outside band",
                   delta_color="normal" if ha_res.pass_slope else "inverse")
         e3.metric("Intercept a", f"{ha_res.intercept:.4f}")
         e4.metric("Obs", str(ha_res.n_obs))
-
         st.caption(
             f"Regression: ΔHedge = a + b·(−ΔItem) · hedged item **{ha_res.hedged_item}** · "
-            f"hedge **{ha_res.hedge_label}** · designation `{ha_res.designation}`. "
-            "Not accounting advice."
+            f"hedge **{ha_res.hedge_label}** · `{ha_res.designation}`. Not accounting advice."
         )
-
         sc = effectiveness_scatter_frame(ha_res)
         fig_ha = go.Figure()
         fig_ha.add_trace(go.Scatter(
             x=sc["−ΔItem ($M)"], y=sc["ΔHedge ($M)"],
             mode="markers+text", text=[f"{s:.0f}bp" for s in ha_res.shocks_bp],
             textposition="top center",
-            marker=dict(size=10, color=ORANGE),
-            name="Shock scenarios",
-            hovertemplate="−ΔItem %{x:.3f}<br>ΔHedge %{y:.3f}<extra></extra>",
+            marker=dict(size=10, color=ORANGE), name="Shock scenarios",
         ))
         xs = np.array([float(sc["−ΔItem ($M)"].min()), float(sc["−ΔItem ($M)"].max())], dtype=float)
         if abs(xs[1] - xs[0]) < 1e-12:
@@ -2263,17 +2328,89 @@ with tab_ccr:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, bgcolor=BG2),
         )
         st.plotly_chart(fig_ha, use_container_width=True)
-
-        st.markdown("**Progressive test** (R² / slope as shock sample expands)")
+        st.markdown("**Progressive test**")
         st.dataframe(progressive_frame(ha_res), use_container_width=True, hide_index=True)
         st.dataframe(sc, use_container_width=True, hide_index=True)
 
-    if run_ccr or st.session_state.get("ccr_auto_once"):
-        st.session_state["ccr_auto_once"] = True
-        with st.spinner("Pricing IRS · simulating EE/PFE · CVA · SA-CCR…"):
+
+# ── TAB: PFE / CVA (limits & counterparty) ────────────────────────────────────
+with tab_pfe:
+    st.markdown(
+        "<p class='section-label'>PFE / CVA — exposure · CVA · SA-CCR limits</p>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Counterparty credit risk on the hedge IRS: economic EE/PFE, unilateral CVA, "
+        "and Basel SA-CCR EAD. Notionals default from the **Hedge Accounting** ticket "
+        "or the KR01 ladder. Also see the Cursor canvas for a standalone PFE/CVA view."
+    )
+
+    from src.cva_pfe import exposure_frame, run_hedge_ccr, saccr_frame
+    from src.key_rate_duration import proposed_swap_notionals
+
+    _kr_pfe = calc.key_rate_duration_gap()
+    _raw_hr = st.session_state.get("kr_hedge_ratio", 80)
+    _hr = float(_raw_hr) / 100.0 if float(_raw_hr) > 1.5 else float(_raw_hr)
+    _ladder = proposed_swap_notionals(_kr_pfe, hedge_ratio=_hr)
+    _from_ha = st.session_state.get("pfe_signed_notionals") or {}
+
+    d2 = float(_from_ha.get(2.0, st.session_state.get("hedge_n_2y", _ladder.get(2.0, 0.0))))
+    d5 = float(_from_ha.get(5.0, st.session_state.get("hedge_n_5y", _ladder.get(5.0, 0.0))))
+    d10 = float(_from_ha.get(10.0, st.session_state.get("hedge_n_10y", _ladder.get(10.0, 0.0))))
+    # If HA ticket was a single tenor, merge into ladder display
+    for _T, _n in _from_ha.items():
+        if abs(float(_T) - 2.0) < 1e-9:
+            d2 = float(_n)
+        elif abs(float(_T) - 5.0) < 1e-9:
+            d5 = float(_n)
+        elif abs(float(_T) - 10.0) < 1e-9:
+            d10 = float(_n)
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        n2c = st.number_input("2Y signed $M", value=round(d2, 1), step=5.0, key="pfe_n_2y")
+    with c2:
+        n5c = st.number_input("5Y signed $M", value=round(d5, 1), step=5.0, key="pfe_n_5y")
+    with c3:
+        n10c = st.number_input("10Y signed $M", value=round(d10, 1), step=5.0, key="pfe_n_10y")
+    with c4:
+        run_pfe = st.button("Run PFE / CVA", type="primary", use_container_width=True, key="pfe_run")
+
+    x1, x2, x3, x4 = st.columns(4)
+    with x1:
+        cds_bp = st.number_input("Counterparty CDS (bp)", value=100.0, min_value=1.0, step=5.0, key="pfe_cds")
+    with x2:
+        recovery = st.number_input("Recovery", value=0.40, min_value=0.0, max_value=0.9, step=0.05, key="pfe_rec")
+    with x3:
+        rate_vol = st.number_input("Rate vol (bp / √y)", value=80.0, min_value=10.0, step=5.0, key="pfe_vol")
+    with x4:
+        collat = st.number_input("Collateral CSA ($M)", value=0.0, step=1.0, key="pfe_col")
+
+    lim1, lim2 = st.columns(2)
+    with lim1:
+        pfe_limit = st.number_input(
+            "PFE limit ($M)", value=50.0, min_value=0.0, step=5.0, key="pfe_limit",
+            help="Internal counterparty PFE limit for pass/fail.",
+        )
+    with lim2:
+        ead_limit = st.number_input(
+            "SA-CCR EAD limit ($M)", value=75.0, min_value=0.0, step=5.0, key="ead_limit",
+        )
+
+    y1, y2 = st.columns(2)
+    with y1:
+        n_paths = st.slider("MC paths", 100, 1000, 400, 100, key="pfe_paths")
+    with y2:
+        pfe_pct = st.slider("PFE percentile", 90, 99, 95, 1, key="pfe_pct")
+
+    notionals_pfe = {2.0: float(n2c), 5.0: float(n5c), 10.0: float(n10c)}
+
+    if run_pfe or st.session_state.get("pfe_auto_once"):
+        st.session_state["pfe_auto_once"] = True
+        with st.spinner("Simulating EE/PFE · CVA · SA-CCR…"):
             report = run_hedge_ccr(
                 curve,
-                notionals_ccr,
+                notionals_pfe,
                 cds_spread_bp=float(cds_bp),
                 recovery=float(recovery),
                 rate_vol_bp=float(rate_vol),
@@ -2283,22 +2420,41 @@ with tab_ccr:
                 collateral_m=float(collat),
             )
         st.session_state["ccr_report"] = report
+        # Snapshot for canvas consumers / export
+        st.session_state["pfe_canvas_snap"] = {
+            "summary": report.summary,
+            "exposure": exposure_frame(report.exposure).to_dict(orient="list"),
+            "saccr": saccr_frame(report.saccr).to_dict(orient="records"),
+            "trades": report.trades_df.to_dict(orient="records") if not report.trades_df.empty else [],
+            "pfe_limit": float(pfe_limit),
+            "ead_limit": float(ead_limit),
+            "pfe_pct": int(pfe_pct),
+        }
 
     report = st.session_state.get("ccr_report")
     if report is None:
-        st.info("Set notionals and click **Run pricing & CCR**.")
+        st.info("Set notionals and click **Run PFE / CVA**.")
     elif report.trades_df.empty:
-        st.warning("All notionals are zero — enter a hedge ladder first.")
+        st.warning("All notionals are zero.")
     else:
         s = report.summary
-        m1, m2, m3, m4, m5 = st.columns(5)
+        peak = float(s["pfe_peak_m"])
+        ead = float(s["saccr_ead_m"])
+        pfe_ok = peak <= float(pfe_limit)
+        ead_ok = ead <= float(ead_limit)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("Portfolio MtM", f"${s['portfolio_mtm_m']:+.3f}M")
         m2.metric("DV01", f"${s['portfolio_dv01_k']:+.1f}K/bp")
         m3.metric("CVA", f"${s['cva_m']:.3f}M")
-        m4.metric(f"PFE {int(pfe_pct)}% peak", f"${s['pfe_peak_m']:.3f}M")
-        m5.metric("SA-CCR EAD", f"${s['saccr_ead_m']:.3f}M")
+        m4.metric(f"PFE {int(pfe_pct)}% peak", f"${peak:.3f}M",
+                  delta="within limit" if pfe_ok else "BREACH",
+                  delta_color="normal" if pfe_ok else "inverse")
+        m5.metric("SA-CCR EAD", f"${ead:.3f}M",
+                  delta="within limit" if ead_ok else "BREACH",
+                  delta_color="normal" if ead_ok else "inverse")
+        m6.metric("Limits", f"PFE {pfe_limit:.0f} / EAD {ead_limit:.0f}")
 
-        st.markdown("**Hedge IRS tickets (ATM fixed rate on active curve)**")
+        st.markdown("**IRS tickets**")
         st.dataframe(report.trades_df, use_container_width=True, hide_index=True)
 
         exp_df = exposure_frame(report.exposure)
@@ -2315,6 +2471,8 @@ with tab_ccr:
             x=exp_df["Time (Y)"], y=exp_df["Mean MtM ($M)"],
             name="Mean MtM", line=dict(color=NAVY, width=1.5, dash="dot"),
         ))
+        fig_ee.add_hline(y=float(pfe_limit), line_dash="dash", line_color=RED,
+                         annotation_text="PFE limit", annotation_font=dict(color=RED, size=10))
         fig_ee.add_hline(y=0, line_color=BORDER, line_width=1)
         fig_ee.update_layout(
             **PLOTLY_BASE, height=380,
@@ -2328,28 +2486,13 @@ with tab_ccr:
         with col_a:
             st.markdown("**Economic exposure path**")
             st.dataframe(exp_df, use_container_width=True, hide_index=True)
-            st.caption(
-                f"MC parallel rate shocks · vol={rate_vol:.0f} bp/√y · "
-                f"{n_paths} paths · unilateral CVA uses CDS≈{cds_bp:.0f} bp, "
-                f"recovery={recovery:.0%}."
-            )
         with col_b:
-            st.markdown("**SA-CCR (regulatory) vs economic PFE**")
+            st.markdown("**SA-CCR (regulatory)**")
             st.dataframe(saccr_frame(report.saccr), use_container_width=True, hide_index=True)
             st.caption(
-                "Economic PFE = MC percentile of positive MtM. "
-                "SA-CCR PFE = multiplier × supervisory Add-on (IR hedge set). "
-                "EAD = 1.4 × (RC + SA-CCR PFE)."
+                "Economic PFE ≠ SA-CCR PFE. "
+                f"PFE limit ${pfe_limit:.1f}M · EAD limit ${ead_limit:.1f}M."
             )
-
-        st.markdown("**How to read this next to EVE**")
-        st.markdown(
-            "- Use **ALCO / KR01 / Hedges → Hedge playbook** for residual ΔEVE after these notionals.\n"
-            "- **CVA** is the expected loss to the swap counterparty — a cost of hedging, "
-            "not an IRRBB capital charge.\n"
-            "- Run **prospective effectiveness** above to document hedge accounting (R² / slope).\n"
-            "- ATM hedges show MtM ≈ 0 at inception; EE/PFE grow with rate volatility and tenor."
-        )
 
 
 # ── TAB 6: Yield Curve ────────────────────────────────────────────────────────
